@@ -1,5 +1,5 @@
-# [SSE] 스트리밍 방식 Springboot <-> chatbot 용 (속도 4.5초)
 import os
+import json
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -16,63 +16,88 @@ app = FastAPI()
 # ✅ 3. OpenAI & Pinecone 초기화
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-index = pc.Index("legal-guideline")  # Pinecone 인덱스 이름
+index = pc.Index("legal-guideline")
 
 # ✅ 4. 요청 모델 정의
 class Query(BaseModel):
     session_id: int
     question: str
 
-# ✅ 5. 유사 문단 검색 함수
-def retrieve_context(query: str, top_k: int = 3):
+# ✅ 5. 유사 문단 검색 (본문+메타데이터 포함)
+def retrieve_context(query: str, top_k: int = 5):
     embedding = client.embeddings.create(
         input=[query],
         model="text-embedding-ada-002"
     ).data[0].embedding
 
     results = index.query(vector=embedding, top_k=top_k, include_metadata=True)
-    contexts = [match["metadata"]["text"] for match in results["matches"]]
-    return "\n".join(contexts)
 
-# ✅ 6. GPT 스트리밍 + SSE
+    context_blocks = []
+    source_pages = []
+    for match in results["matches"]:
+        meta = match["metadata"]
+        context_blocks.append(
+            f"📌 유형: {meta.get('유형', '없음')}\n"
+            f"📖 본문: {meta.get('본문', '')}\n"
+            f"⚖ 관련 법률: {meta.get('관련 법률', '없음')}\n"
+            f"📝 요약: {meta.get('요약', '')}\n"
+        )
+        source_pages.append({
+            "유형": meta.get("유형", "없음"),
+            "관련법률": meta.get("관련 법률", "없음")
+        })
+
+    return "\n---\n".join(context_blocks), source_pages
+
+# ✅ 6. GPT 스트리밍 + JSON 응답
 @app.post("/stream")
 async def stream_chat(query: Query):
-    # 🔍 Pinecone 검색
-    context = retrieve_context(query.question)
+    context, source_pages = retrieve_context(query.question)
+    source_hint = json.dumps(source_pages, ensure_ascii=False, indent=2)
 
-    # 💬 프롬프트 생성
     prompt = f"""
-    너는 악성민원 대응 가이드 문서를 기반으로 법률 상담을 도와주는 역할이야.
-    다음은 문서에서 발췌한 참고 내용이야:
-    {context}
+너는 악성민원 대응 및 관련 법률 상담을 도와주는 AI야.
+아래 참고 자료를 바탕으로 사용자의 질문에 자연스러운 문장으로 답변하고, 반드시 코드 블록 없이 JSON만 출력해.
+문장에는 자연스러운 한글 띄어쓰기를 유지해.
 
-    위 내용을 참고해서 사용자의 질문에 정확하고 간결하게 답변해줘:
-    "{query.question}"
-    """
+출력 형식 예시:
+{{
+  "answer": "자연스러운 한글 답변 문장",
+  "sourcePages": [
+    {{
+      "유형": "유형",
+      "관련법률": "관련 법률"
+    }}
+  ]
+}}
 
-    # GPT 스트리밍 호출
+### 참고 자료:
+{context}
+
+### 질문:
+{query.question}
+"""
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "너는 법률 문서를 기반으로 상담하는 도우미야."},
+            {"role": "system", "content": "너는 악성민원 대응 가이드 및 관련 법률 문서를 기반으로 상담하는 전문가 AI야. 반드시 JSON 형식으로만 출력하고 추가 설명은 하지 마."},
             {"role": "user", "content": prompt}
         ],
         stream=True
     )
 
-    # SSE 이벤트 생성기
     async def event_generator():
-        buffer = ""
+        full_response = ""
+        # 🔹 스트리밍: 실시간 UI 표시
         for chunk in response:
             delta = chunk.choices[0].delta.content
-            if delta is not None:
-                buffer += delta
-                if buffer.endswith((" ", "\n")):  # 공백 포함 시 즉시 flush
-                    yield f"data: {buffer}\n\n"
-                    buffer = ""
-        if buffer:  # 남은 텍스트 flush
-            yield f"data: {buffer}\n\n"
-
-
+            if delta:
+                full_response += delta
+                yield f"data: {delta}\n\n"  # UI 표시용 (실시간)
+        
+        # 🔹 마지막에만 완성된 JSON 별도 전송 (파싱 용)
+        yield f"data: [JSON]{full_response}\n\n"
+        yield "data: [END]\n\n"
 
     return EventSourceResponse(event_generator())
