@@ -57,16 +57,27 @@ async def stream_chat(query: Query):
 
     prompt = f"""
 너는 악성민원 대응 및 관련 법률 상담을 도와주는 AI야.
-아래 참고 자료를 바탕으로 사용자의 질문에 자연스러운 문장으로 답변하고, 반드시 코드 블록 없이 JSON만 출력해.
-문장에는 자연스러운 한글 띄어쓰기를 유지해.
+아래 참고 자료를 바탕으로 사용자의 질문에 대해 자연스럽고 자세한 문장으로 답변해줘.
 
-출력 형식 예시:
+다음 형식의 JSON으로만 출력하고, 코드 블록은 사용하지 마. 모든 출력은 올바른 띄어쓰기를 가진 자연스러운 한글이어야 해.
+
+- answer: 두 문단으로 작성
+    1. 사용자의 질문에 대한 일반적이고 자연스러운 답변
+    2. "당신이 상담한 내용은 ~유형에 포함되며, 관련 법률로는 ~가 있습니다." 형식으로 설명
+
+    💡 만약 '민원처리법 제23조'와 같은 법률 조항이 등장하면,
+       해당 조항의 주요 내용을 한두 문장으로 요약해줘.
+       예: "민원처리법 제23조를 보면, 행정기관은 민원 처리 결과를 문서로 통지하고 지연 시 사유와 예정일을 알려야 한다고 규정하고 있습니다."
+
+- sourcePages: 아래 참고자료의 '유형'과 '관련법률'만 배열 형태로 정리
+
+출력 예시:
 {{
-  "answer": "자연스러운 한글 답변 문장",
+  "answer": "사용자의 민원은 반복적인 요청과 장시간 통화로 이어졌습니다. 이는 상담사의 대응 효율을 떨어뜨릴 수 있어 적절한 조치가 필요합니다.\n\n당신이 상담한 내용은 '반복 민원' 유형에 해당하며, 관련 법률로는 '국민권익위원회 상담사 보호 지침'이 있습니다.",
   "sourcePages": [
     {{
-      "유형": "유형",
-      "관련법률": "관련 법률"
+      "유형": "반복 민원",
+      "관련법률": "국민권익위원회 상담사 보호 지침"
     }}
   ]
 }}
@@ -81,7 +92,10 @@ async def stream_chat(query: Query):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "너는 악성민원 대응 가이드 및 관련 법률 문서를 기반으로 상담하는 전문가 AI야. 반드시 JSON 형식으로만 출력하고 추가 설명은 하지 마."},
+            {
+                "role": "system",
+                "content": "너는 악성민원 대응 가이드 및 관련 법률 문서를 기반으로 상담하는 전문가 AI야. 반드시 JSON 형식으로만 출력하고, 코드 블록이나 부가 설명은 절대 하지 마."
+            },
             {"role": "user", "content": prompt}
         ],
         stream=True
@@ -89,14 +103,12 @@ async def stream_chat(query: Query):
 
     async def event_generator():
         full_response = ""
-        # 🔹 스트리밍: 실시간 UI 표시
         for chunk in response:
             delta = chunk.choices[0].delta.content
             if delta:
                 full_response += delta
-                yield f"data: {delta}\n\n"  # UI 표시용 (실시간)
-        
-        # 🔹 마지막에만 완성된 JSON 별도 전송 (파싱 용)
+                yield f"data: {delta}\n\n"
+
         yield f"data: [JSON]{full_response}\n\n"
         yield "data: [END]\n\n"
 
