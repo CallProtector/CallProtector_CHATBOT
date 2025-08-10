@@ -2,10 +2,13 @@ import os
 import json
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi import APIRouter
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from openai import OpenAI
 from pinecone import Pinecone
+
+router = APIRouter()
 
 # ✅ 1. 환경 변수 로드
 load_dotenv()
