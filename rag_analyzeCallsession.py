@@ -150,13 +150,16 @@ async def analyze_call_session(request: Request):
                     yield f"{delta}\n\n"
                     await asyncio.sleep(0.01)
 
-            yield f"data: [JSON]{full_response}\n\n"
+            # 이전 ver 
+            #yield f"data: [JSON]{full_response}\n\n"
+            # 수정 ver
+            payload = {"answer": full_response, "sourcePages": source_pages}
+            yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
+            
             yield "data: [END]\n\n"
-
         except Exception as e:
+            # 에러는 에러로만 통지 ( JSON 변환 이딴 거 X)
             yield f"data: [ERROR] {str(e)}\n\n"
-            # 아래꺼 08/10 시도즁~~ 
-            # yield f"data: [JSON]{json.dumps({'answer': full_response, 'sourcePages': source_pages}, ensure_ascii=False)}\n\n"
             yield "data: [END]\n\n"
 
     return EventSourceResponse(event_generator())
