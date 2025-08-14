@@ -37,5 +37,6 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /home/ubuntu/CallProtector_BE
+            docker-compose rm -sf chatbot
             docker pull callprotect/chatbot:latest
             docker-compose up -d chatbot
