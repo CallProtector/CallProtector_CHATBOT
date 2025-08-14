@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 from openai import OpenAI
 from pinecone import Pinecone
@@ -10,18 +10,20 @@ from dotenv import load_dotenv
 # ✅ 환경 변수 로드
 load_dotenv()
 
-app = FastAPI()
+router = APIRouter()
 
 # ✅ OpenAI & Pinecone 초기화
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-index = pc.Index("legal-guideline")
+# 오레곤(us-west-2) 인덱스 사용
+index_name = os.getenv("PINECONE_INDEX", "legal-guideline-usw2")
+index = pc.Index(index_name)
 
 # ✅ 벡터 검색 함수 정의
 def retrieve_context(query: str, top_k: int = 5):
     embedding = client.embeddings.create(
         input=[query],
-        model="text-embedding-ada-002"
+        model="text-embedding-3-small"  # ✅ 더 빠르고 저렴
     ).data[0].embedding
 
     results = index.query(vector=embedding, top_k=top_k, include_metadata=True)
@@ -44,7 +46,7 @@ def retrieve_context(query: str, top_k: int = 5):
     return "\n---\n".join(context_blocks), source_pages
 
 
-@app.post("/api/chatbot/analyze")
+@router.post("/analyze")
 async def analyze_call_session(request: Request):
     body = await request.json()
     session_id = body.get("sessionId")
@@ -148,7 +150,6 @@ async def analyze_call_session(request: Request):
                 if delta:
                     full_response += delta
                     yield f"{delta}\n\n"
-                    await asyncio.sleep(0.01)
 
             # 이전 ver 
             #yield f"data: [JSON]{full_response}\n\n"
