@@ -71,11 +71,11 @@ async def analyze_call_session(request: Request):
     if "성희롱" in question:
         additional_laws += "\n📚 성희롱 관련 법률:\n- 성폭력범죄의 처벌 등에 관한 특례법 제13조: 2년 이하 징역 또는 2천만원 이하 벌금"
 
-    if "욕설" in question or "협박" in question:
-        additional_laws += "\n📚 욕설·협박 관련 법률:\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금"
+    if "욕설" in question or "협박" in question or "폭언" in question:
+        additional_laws += "\n📚 욕설·협박·폭언 관련 법률:\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금"
 
-    if "모욕" in question or "명예훼손" in question:
-        additional_laws += "\n📚 명예훼손·모욕 관련 법률:\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
+    if "모욕" in question or "명예훼손" in question or "폭언" in question:
+        additional_laws += "\n📚 명예훼손·모욕·폭언 관련 법률:\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
 
     if "업무방해" in question:
         additional_laws += "\n📚 업무방해 관련 법률:\n- 형법 제314조(업무방해): 5년 이하 징역 또는 1천5백만원 이하 벌금"

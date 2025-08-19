@@ -117,10 +117,10 @@ def law_hints_from_text(text: str) -> List[Dict[str, str]]:
 
     if any(k in t for k in ["성희롱", "음란", "음담"]):
         add("성희롱/음란발언", "성폭력범죄의 처벌 등에 관한 특례법 제13조")
-    if any(k in t for k in ["욕설", "협박"]):
-        add("모욕/협박/폭행", "형법 제283조, 제260조")
-    if any(k in t for k in ["모욕", "명예훼손"]):
-        add("명예훼손/모욕", "형법 제307조, 제311조")
+    if any(k in t for k in ["욕설", "협박","폭언"]):
+        add("모욕/협박/폭행/폭언", "형법 제283조, 제260조")
+    if any(k in t for k in ["모욕", "명예훼손","폭언"]):
+        add("명예훼손/모욕/폭언", "형법 제307조, 제311조")
     if "업무방해" in t:
         add("업무방해", "형법 제314조")
     if "강요" in t:

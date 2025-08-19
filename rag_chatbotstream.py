@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from openai import OpenAI
 from pinecone import Pinecone
+import re
 
 # ✅ 1. 환경 변수 로드
 load_dotenv()
@@ -40,10 +41,10 @@ def keyword_pairs_first(text: str):
 
     if any(k in hay for k in ["성희롱", "음란", "음담"]):
         add("성희롱/음란발언", "성폭력범죄의 처벌 등에 관한 특례법 제13조")
-    if any(k in hay for k in ["욕설", "협박"]):
-        add("협박/폭행 가능성", "형법 제283조(협박); 형법 제260조(폭행)")
-    if any(k in hay for k in ["모욕", "명예훼손"]):
-        add("명예훼손·모욕", "형법 제307조(명예훼손); 형법 제311조(모욕)")
+    if any(k in hay for k in ["욕설", "협박", "폭언"]):
+        add("협박/폭행(폭언) 가능성", "형법 제283조(협박); 형법 제260조(폭행)")
+    if any(k in hay for k in ["모욕", "명예훼손", "폭언"]):
+        add("명예훼손·모욕·폭언", "형법 제307조(명예훼손); 형법 제311조(모욕)")
     if "업무방해" in hay:
         add("업무방해", "형법 제314조")
     if "강요" in hay:
@@ -88,23 +89,130 @@ def _merge_sources(primary, *others):
         push_list(o)
     return merged
 
-# '관련법률: 없음' 항목을 제거  
+# ✅ 법률 한 줄 요약 사전 (필요하면 추가)
+_LAW_BRIEFS = {
+    "성폭력범죄의 처벌 등에 관한 특례법 제13조": "통신수단을 이용한 음란·성적 수치심 유발 행위를 처벌합니다. 이는 2년 이하 징역 또는 2천만원 이하 벌금형에 해당합니다. ",
+    "형법 제283조": "폭행·협박으로 상대방의 의사결정을 제압하는 행위를 처벌합니다. 이는  3년 이하 징역 또는 500만원 이하 벌금형에 해당합니다.",
+    "형법 제260조": "상대방의 신체에 대해 유형력을 행사하는 폭행을 처벌합니다. 이는 2년 이하 징역 또는 500만원 이하 벌금형에 해당합니다.",
+    "형법 제307조": "허위 사실 적시 또는 사실 적시로 타인의 명예를 훼손하는 행위를 처벌합니다. 이는 2년 이하 징역 또는 500만원 이하 벌금형에 해당합니다.",
+    "형법 제311조": "공연히 사람을 모욕하는 행위를 처벌합니다. 이는 1년 이하 징역 또는 200만원 이하 벌금형에 해당합니다.",
+    "형법 제314조": "위력 또는 기타 방법으로 타인의 업무를 방해하는 행위를 처벌합니다. 이는 5년 이하 징역 또는 1천5백만원 이하 벌금형에 해당합니다.",
+    "형법 제324조": "폭행·협박 등으로 의사에 반해 의무 없는 일을 하게 하는 강요를 처벌합니다. 이는 5년 이하 징역 또는 3천만원 이하 벌금형에 해당합니다.",
+    "경범죄처벌법 제3조 제1항 제40호": "정당한 이유 없이 반복적 전화 등으로 남을 괴롭히는 행위를 제재합니다. 이는 10만원 이하 벌금, 구류, 과료형에 해당합니다.",
+    "스토킹범죄의 처벌 등에 관한 법률 제18조 제1항": "지속적·반복적 스토킹 범죄를 처벌하고 보호조치를 규정합니다. 이는 3년 이하 징역 또는 3천만원 이하 벌금형에 해당합니다.",
+    "국민권익위원회 상담사 보호 지침": "상담 과정에서 발생하는 욕설·폭언·성희롱 등 악·강성 민원으로부터 상담사를 보호하기 위해 마련된 제도적 지침입니다. 상담 종료 기준, 기록 관리, 보호 조치 절차 등을 규정합니다."
+}
+
+# 키워드 기반 기본 요약(매핑 없을 때 중복 최소화)
+def _brief_fallback_by_keyword(law: str) -> str:
+    if "협박" in law:
+        return "상대방에게 공포심을 야기하는 협박 행위를 처벌합니다."
+    if "폭행" in law:
+        return "상대방 신체에 대한 유형력 행사(폭행)를 처벌합니다."
+    if "모욕" in law:
+        return "공연히 사람을 모욕하는 언행을 처벌합니다."
+    if "명예훼손" in law:
+        return "허위 사실 또는 사실 적시의 명예훼손 행위를 처벌합니다."
+    if "통신" in law or "이용음란" in law or "성폭력" in law:
+        return "통신수단을 이용한 성적 수치심 유발 행위를 처벌합니다."
+    if "업무방해" in law:
+        return "위력 기타 방법으로 타인의 업무를 방해하는 행위를 처벌합니다."
+    if "스토킹" in law:
+        return "지속·반복적 스토킹 행위를 처벌하고 피해자 보호를 규정합니다."
+    if "국민권익위원회 상담사 보호 지침" in law:
+        return "상담 과정에서 발생하는 욕설·폭언·성희롱 등 악·강성 민원으로부터 상담사를 보호하기 위해 마련된 제도적 지침입니다. 상담 종료 기준, 기록 관리, 보호 조치 절차 등을 규정합니다."
+    return "해당 조항은 관련 행위를 규율·제재하여 피해 방지를 도모합니다."
+
+def _brief_for_law(law: str) -> str:
+    return _LAW_BRIEFS.get(law, _brief_fallback_by_keyword(law))
+
+def _build_second_paragraph(sources: list[dict]) -> str:
+    if not sources:
+        head = "당신이 상담한 내용은 ‘해당 유형’을에 해당할 수 있으며, 관련 법률로는 ‘관련 법률’이 있습니다."
+        tail = "각 법률의 구체 적용은 상황에 따라 달라질 수 있으므로, 기관 지침과 법률 자문을 함께 참고하시길 권장드립니다."
+        return f"{head}\n{tail}"
+
+    typ = (sources[0].get("유형") or "해당 유형").strip()
+    laws = [e.get("관련법률", "").strip() for e in sources if e and e.get("관련법률")]
+
+    # ✅ 중복 제거 (순서 유지)
+    seen = set()
+    unique_laws = []
+    for lw in laws:
+        if lw not in seen:
+            seen.add(lw)
+            unique_laws.append(lw)
+
+    laws_str = "’, ‘".join(unique_laws) if unique_laws else "관련 법률"
+
+    head = f"당신이 상담한 내용은 ‘{typ}’에 해당할 수 있으며, 관련 법률로는 ‘{laws_str}’가 있습니다."
+    lines = [f"- {law}: {_brief_for_law(law)}" for law in unique_laws]
+    tail = "\n".join(lines) if lines else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
+    return f"{head}\n{tail}"
+
+def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
+    text = (answer or "").strip()
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    if not paras:
+        paras = ["상황 기록, 증거 보존, 상급자 보고, 심리적 안정 확보 등 즉시 조치를 진행하세요."]
+
+    second = _build_second_paragraph(final_sources)
+
+    if len(paras) == 1:
+        paras.append(second)
+    else:
+        # ✅ 무조건 dedup 로직을 거친 결과로 교체
+        paras[1] = second
+
+    first_sentences = [s for s in paras[0].split("。") if s.strip()] if "。" in paras[0] else [s for s in paras[0].split(".") if s.strip()]
+    if len(first_sentences) < 4:
+        supplement = "사건 직후에는 통화 선종료 기준과 차단 방침을 숙지하고, 재발 방지를 위해 안내 멘트를 활용하세요. 내부 기록 시스템에 시간·상황·발언 내용을 구체적으로 남기고, 필요 시 보호 조치를 즉시 요청하세요."
+        paras[0] = (paras[0] + " " + supplement).strip()
+
+    return "\n\n".join(paras)
+
+# 관련법률 중복 제거해주는 함수  
+def _normalize_law_name(law: str) -> str:
+    """
+    법률명 + 조문번호만 남기고 괄호/주석은 제거
+    예: '민원처리법 제23조 (3회 이상 반복 시 종결)' → '민원처리법 제23조'
+    """
+    if not law:
+        return ""
+    return re.sub(r"\s*\(.*?\)", "", law).strip()
+
+# 유형, 법률 중복 항목을 제거 
 def _post_filter_sources(sources, limit=3):
     """
-    - 비법률/빈값/‘없음’ 제거
-    - 최대 limit개로 제한
+    - 법률명만 기준으로 중복 제거 (유형이 달라도 같은 법률이면 1개만)
+    - 지침/가이드 등 비법률도 허용 (요구사항 반영)
+    - 괄호 설명 제거(normalize) + ; , 로 묶인 항목 분할
+    - 최대 limit개 유지
     """
     out = []
-    for e in sources:
-        if not e:
-            continue
+    seen_laws = set()
+
+    for e in sources or []:
         typ = (e.get("유형") or "").strip()
-        law = (e.get("관련법률") or "").strip()
-        if not typ or not law or law == "없음":
+        raw_law = (e.get("관련법률") or "").strip()
+        if not typ or not raw_law or raw_law == "없음":
             continue
-        out.append({"유형": typ, "관련법률": law})
-        if len(out) >= limit:
-            break
+
+        # 여러 개 한 줄일 수 있으니 분할
+        for lw in [x.strip() for x in re.split(r"[;,]", raw_law) if x.strip()]:
+            norm = _normalize_law_name(lw)  # 괄호/주석 제거
+            key = norm.lower()
+            if not norm:
+                continue
+            # ✅ 법률 기준으로 dedup (유형은 달라도 같은 법률이면 skip)
+            if key in seen_laws:
+                continue
+            seen_laws.add(key)
+            out.append({"유형": typ, "관련법률": norm})
+            if len(out) >= limit:
+                return out
+
     return out
 
 
@@ -133,7 +241,8 @@ def retrieve_context(query: str, top_k: int = 2):
         # ✅ 최종 JSON에서는 '관련법률'(띄어쓰기 없음)
         # ✅ '없음'은 제외해 sourcePages 정합성 보장
         if law and law != "없음":
-            source_pages.append({"유형": typ, "관련법률": law})
+            law_norm = _normalize_law_name(law)  # ✅ 추가: 괄호·주석 제거
+            source_pages.append({"유형": typ, "관련법률": law_norm})
 
     return "\n---\n".join(context_blocks), source_pages
 
@@ -218,6 +327,12 @@ async def stream_chat(query: Query):
                 sp = parsed.get("sourcePages")
                 if isinstance(sp, list):
                     model_sources = [_clean_pair(e) for e in sp if _clean_pair(e)]
+                    # ✅ 추가: 관련법률 정규화
+                    model_sources = [
+                        {"유형": ms["유형"], "관련법률": _normalize_law_name(ms["관련법률"])}
+                        for ms in model_sources
+                    ]
+
         except Exception:
             pass
 
@@ -226,8 +341,11 @@ async def stream_chat(query: Query):
         
         # ✅ 후처리: 비법률/없음 제거 + 최대 3개 제한
         final_sources = _post_filter_sources(final_sources, limit=3)
+        
+        # ✅ answer 2문단/시작문장/요약 강제 보정
+        final_answer = _ensure_two_paragraphs(model_answer, final_sources)
 
-        payload = {"answer": model_answer, "sourcePages": final_sources}
+        payload = {"answer": final_answer, "sourcePages": final_sources}
         yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
         yield "data: [END]\n\n"
 
