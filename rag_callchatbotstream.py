@@ -37,14 +37,6 @@ def ns_key(session_id: int) -> str:
     return "call:" + str(session_id)
 
 
-def legal_like(s: str) -> bool:
-    """정책/지침/조례 등은 제외하고, 법률/조문 형태만 허용하기 위한 간단한 필터."""
-    low = (s or "").lower()
-    exclude_kw = ["정책", "체계", "가이드", "지침", "매뉴얼", "계획", "조례"]
-    if any(k in low for k in exclude_kw):
-        return False
-    return True  # 간단 필터: 법률명/조문 텍스트는 허용
-
 # ---- smalltalk ----
 SMALLTALK_KWS = [
     "안녕","안뇽","하이","hi","hello","헬로","헤이","방가","ㅎㅇ","그냥",
@@ -126,8 +118,10 @@ def keyword_pairs_first(text: str) -> list[dict]:
         add("업무방해","형법 제314조")
     if "강요" in hay:
         add("강요","형법 제324조")
-    if any(k in hay for k in ["장난전화","괴롭힘","반복적인 민원"]):
+    if any(k in hay for k in ["장난전화","괴롭힘"]):
         add("장난전화/경범","경범죄처벌법 제3조 제1항 제40호")
+    if any(k in hay for k in ["반복적인 민원"]):
+        add("반복(고질.강성민원)", "경범죄처벌법 제3조 제1항 제40호")
     if "스토킹" in hay:
         add("스토킹","스토킹범죄의 처벌 등에 관한 법률 제18조")
     return out[:5]
@@ -208,8 +202,6 @@ def merge_unique(*lists: List[Dict[str, str]]) -> List[Dict[str, str]]:
             typ = (e.get("유형") or "").strip()
             law = (e.get("관련법률") or "").strip()
             if not (_ok(typ) and _ok(law)):
-                continue
-            if not legal_like(typ + " " + law):
                 continue
             key = (typ, law)
             if key in seen:
@@ -307,7 +299,6 @@ def build_prompts(mem_text: str, rag_text: str, scripts_text: str, question: str
         "답변 생성 시 반드시 [대화 스크립트]를 우선 근거로 삼고, 사용자의 질문은 이 스크립트에 이어지는 추가 맥락으로만 해석하라."
         "만약 스크립트와 질문이 충돌할 경우 스크립트를 신뢰하라. "
         "참고자료를 answer에 그대로 복붙하지 말고 요약/해설하라. "
-        "sourcePages에는 '유형/관련법률'만 넣고, 정책·지침·가이드·조례 등은 sourcePages에 담지 말고 answer 본문에서 언급하라."
         "한국어로만 답하고, 불확실한 내용은 단정하지 말고 '~일 수 있습니다' 같은 완곡 표현을 사용하라."
     )
     user = f"""

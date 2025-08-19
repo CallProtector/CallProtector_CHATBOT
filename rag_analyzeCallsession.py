@@ -6,6 +6,7 @@ import os
 import json
 import asyncio
 from dotenv import load_dotenv
+import re 
 
 # ✅ 환경 변수 로드
 load_dotenv()
@@ -18,6 +19,46 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 # 오레곤(us-west-2) 인덱스 사용
 index_name = os.getenv("PINECONE_INDEX", "legal-guideline-usw2")
 index = pc.Index(index_name)
+
+def _normalize_law_name(law: str) -> str:
+    """
+    법률명 + 조문번호만 남기고 괄호/주석은 제거.
+    예: '민원처리법 제23조 (3회 이상 반복 시 종결)' → '민원처리법 제23조'
+    """
+    if not law:
+        return ""
+    return re.sub(r"\s*\(.*?\)", "", law).strip()
+
+def _post_filter_sources(sources, limit=3):
+    """
+    - '관련법률'이 '없음'이거나 빈 값이면 제외
+    - ';' 또는 ',' 로 묶인 다중 법률 분할 후 각각 정규화
+    - 같은 법률(정규화 기준) 중복 제거 (유형 달라도 법률이 같으면 1개만)
+    - 최대 limit개로 제한
+    """
+    out = []
+    seen_laws = set()
+
+    for e in sources or []:
+        typ = (e.get("유형") or "").strip()
+        raw_law = (e.get("관련법률") or "").strip()
+        if not typ or not raw_law or raw_law == "없음":
+            continue
+
+        # 여러 개가 한 줄에 들어오는 경우 분할
+        for lw in [x.strip() for x in re.split(r"[;,]", raw_law) if x.strip()]:
+            norm = _normalize_law_name(lw)
+            if not norm:
+                continue
+            key = norm.lower()
+            if key in seen_laws:
+                continue
+            seen_laws.add(key)
+            out.append({"유형": typ, "관련법률": norm})
+            if len(out) >= limit:
+                return out
+
+    return out
 
 # ✅ 벡터 검색 함수 정의
 def retrieve_context(query: str, top_k: int = 5):
@@ -45,6 +86,7 @@ def retrieve_context(query: str, top_k: int = 5):
 
     return "\n---\n".join(context_blocks), source_pages
 
+# ---------- 🧠 분석 엔드포인트 ----------
 
 @router.post("/analyze")
 async def analyze_call_session(request: Request):
@@ -60,38 +102,64 @@ async def analyze_call_session(request: Request):
     context_dialogue = "\n".join(f"{s['speaker']}: {s['text']}" for s in scripts)
 
     # ✅ RAG용 질의 생성
-    question = f"다음 상담 내용에서 고객이 성희롱, 폭언, 협박 등의 발언을 했다면 어떤 법률 조항(법률명 + 조문번호 포함)이 적용될 수 있으며, 어떻게 대응해야 하는지 알려줘.\n\n{context_dialogue}"
+    question = (
+        "다음 상담 내용에서 고객이 성희롱, 폭언, 협박 등의 발언을 했다면 "
+        "어떤 법률 조항(법률명 + 조문번호 포함)이 적용될 수 있으며, 어떻게 대응해야 하는지 알려줘.\n\n"
+        f"{context_dialogue}"
+    )
 
-    # ✅ RAG 문단 검색
+    # ✅ RAG 문단 검색 + sourcePages(정규화/중복 제거된 상태로 반환)
     rag_context, source_pages = retrieve_context(question)
 
-    # ✅ 추가 법률 정보 삽입
+    # ✅ 추가 법률 정보 삽입 (UI용 컨텍스트에만 추가)
     additional_laws = ""
 
     if "성희롱" in question:
-        additional_laws += "\n📚 성희롱 관련 법률:\n- 성폭력범죄의 처벌 등에 관한 특례법 제13조: 2년 이하 징역 또는 2천만원 이하 벌금"
+        additional_laws += (
+            "\n📚 성희롱 관련 법률:\n"
+            "- 성폭력범죄의 처벌 등에 관한 특례법 제13조: 2년 이하 징역 또는 2천만원 이하 벌금"
+        )
 
     if "욕설" in question or "협박" in question or "폭언" in question:
-        additional_laws += "\n📚 욕설·협박·폭언 관련 법률:\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금"
+        additional_laws += (
+            "\n📚 욕설·협박·폭언 관련 법률:\n"
+            "- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n"
+            "- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금"
+        )
 
     if "모욕" in question or "명예훼손" in question or "폭언" in question:
-        additional_laws += "\n📚 명예훼손·모욕·폭언 관련 법률:\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
+        additional_laws += (
+            "\n📚 명예훼손·모욕·폭언 관련 법률:\n"
+            "- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n"
+            "- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
+        )
 
     if "업무방해" in question:
-        additional_laws += "\n📚 업무방해 관련 법률:\n- 형법 제314조(업무방해): 5년 이하 징역 또는 1천5백만원 이하 벌금"
+        additional_laws += (
+            "\n📚 업무방해 관련 법률:\n"
+            "- 형법 제314조(업무방해): 5년 이하 징역 또는 1천5백만원 이하 벌금"
+        )
 
     if "강요" in question:
-        additional_laws += "\n📚 강요 관련 법률:\n- 형법 제324조(강요): 5년 이하 징역 또는 3천만원 이하 벌금"
+        additional_laws += (
+            "\n📚 강요 관련 법률:\n"
+            "- 형법 제324조(강요): 5년 이하 징역 또는 3천만원 이하 벌금"
+        )
 
-    if "장난전화" in question or "괴롭힘" in question or"반복적인 민원" in question:
-        additional_laws += "\n📚 장난전화 관련 법률:\n- 경범죄처벌법 제3조 제1항 제40호: 10만원 이하 벌금, 구류, 과료"
+    if "장난전화" in question or "괴롭힘" in question or "반복적인 민원" in question:
+        additional_laws += (
+            "\n📚 장난전화/경범(강성 민원) 관련 법률:\n"
+            "- 경범죄처벌법 제3조 제1항 제40호: 10만원 이하 벌금, 구류, 과료"
+        )
 
-    if "스토킹" in question  :
-        additional_laws += "\n📚 스토킹 관련 법률:\n- 스토킹범죄의 처벌 등에 관한 법률 제18조 제1항: 3년 이하 징역 또는 3천만원 이하 벌금"
+    if "스토킹" in question:
+        additional_laws += (
+            "\n📚 스토킹 관련 법률:\n"
+            "- 스토킹범죄의 처벌 등에 관한 법률 제18조 제1항: 3년 이하 징역 또는 3천만원 이하 벌금"
+        )
 
     if additional_laws:
         rag_context += "\n---\n" + additional_laws
-
 
     # ✅ 프롬프트 작성
     prompt = f"""
@@ -151,15 +219,13 @@ async def analyze_call_session(request: Request):
                     full_response += delta
                     yield f"{delta}\n\n"
 
-            # 이전 ver 
-            #yield f"data: [JSON]{full_response}\n\n"
-            # 수정 ver
-            payload = {"answer": full_response, "sourcePages": source_pages}
+            # ✅ 최종 전송 전, source_pages를 한번 더 안전하게 후처리(중복/정규화/최대3)
+            source_pages_filtered = _post_filter_sources(source_pages, limit=3)
+
+            payload = {"answer": full_response, "sourcePages": source_pages_filtered}
             yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
-            
             yield "data: [END]\n\n"
         except Exception as e:
-            # 에러는 에러로만 통지 ( JSON 변환 이딴 거 X)
             yield f"data: [ERROR] {str(e)}\n\n"
             yield "data: [END]\n\n"
 
