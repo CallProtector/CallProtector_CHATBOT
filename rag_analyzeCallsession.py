@@ -332,6 +332,20 @@ async def analyze_call_session(request: Request):
 
             # 3) RAG 소스
             rag_sources = source_pages_rag
+            
+            # ✅ 평범한 통화 여부 체크
+            if not kw_sources and not model_sources and not rag_sources:
+                final_answer = (
+                    "안녕하세요 고객님, 방금 통화 중에 발생한 상황에 대해 처리 방법과 관련 법률을 안내해드리겠습니다.\n\n"
+                    "현재 통화 내용에서는 특별히 문제가 되는 발언이 발견되지 않았습니다. "
+                    "따라서 본 건은 법적 조치 대상은 아니며 일반 민원 응대로 판단됩니다.\n\n"
+                    "➕ 추가로 도움이 필요하시면 언제든 말씀해주세요!"
+                )
+                payload = {"answer": final_answer, "sourcePages": []}
+                yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
+                yield "data: [END]\n\n"
+                return  # ✅ 여기서 종료
+
 
             # 4) 최종 병합 (kw → model → rag)
             merged = kw_sources + model_sources + rag_sources
