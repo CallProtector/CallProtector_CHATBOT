@@ -162,16 +162,19 @@ def _build_second_paragraph(sources: list[dict]) -> str:
     if not sources:
         return ("당신이 상담한 내용은 **‘해당 유형’**에 해당할 수 있으며, 관련 법률로는 **‘해당 법률’**이 있습니다.\n"
                 "각 법률의 적용은 상황에 따라 달라질 수 있으니 기관 지침과 법률 자문을 함께 참고하세요.")
+
     typ = (sources[0].get("유형") or "해당 유형").strip()
-    laws = []
-    seen = set()
+    laws, seen = [], set()
     for e in sources:
         l = (e.get("관련법률") or "").strip()
-        if not l or l in seen: continue
+        if not l or l in seen: 
+            continue
         seen.add(l)
         laws.append(l)
+
     head = f"당신이 상담한 내용은 **‘{typ}’**에 해당할 수 있으며, 관련 법률로는 **‘" + "’, ‘".join(laws) + "’**가 있습니다."
-    bullets = "\n".join([f"- {l}: {_brief_for_law(l)}" for l in laws])
+    # ✅ 법률명만 굵게
+    bullets = "\n".join([f"- **{l}**: {_brief_for_law(l)}" for l in laws])
     return head + "\n" + bullets
 
 def ensure_two_paragraphs(answer: str, sources: list[dict]) -> str:
@@ -214,6 +217,18 @@ def merge_unique(*lists: List[Dict[str, str]]) -> List[Dict[str, str]]:
             seen.add(key)
             out.append({"유형": typ, "관련법률": law})
     return out
+
+
+def _format_sourcepages_pairs(sources: list[dict]) -> str:
+    """유형–관련법률 쌍을 블록으로 묶어, 블록 사이에 빈 줄을 넣어 반환."""
+    blocks = []
+    for e in sources or []:
+        t = (e.get("유형") or "").strip()
+        l = (e.get("관련법률") or "").strip()
+        if not t or not l:
+            continue
+        blocks.append(f"- 유형: {t}\n- 관련법률: {l}")
+    return "\n\n".join(blocks)
 
 def retrieve_context(query: str, top_k: int = 5) -> tuple[str, list[dict]]:
     emb = client.embeddings.create(input=[query], model="text-embedding-3-small").data[0].embedding
@@ -289,14 +304,26 @@ def build_prompts(mem_text: str, rag_text: str, scripts_text: str, question: str
     sys = (
         "너는 악성민원 대응/법률 자문 전문가 AI다. 반드시 JSON만 출력한다. "
         "키는 answer, sourcePages 고정. 코드블록/추가설명 금지. "
-        "사실 판단은 [대화 스크립트]를 최우선으로 하고, 충돌 시 스크립트를 신뢰하라. "
+        "답변 생성 시 반드시 [대화 스크립트]를 우선 근거로 삼고, 사용자의 질문은 이 스크립트에 이어지는 추가 맥락으로만 해석하라."
+        "만약 스크립트와 질문이 충돌할 경우 스크립트를 신뢰하라. "
         "참고자료를 answer에 그대로 복붙하지 말고 요약/해설하라. "
         "sourcePages에는 '유형/관련법률'만 넣고, 정책·지침·가이드·조례 등은 sourcePages에 담지 말고 answer 본문에서 언급하라."
+        "한국어로만 답하고, 불확실한 내용은 단정하지 말고 '~일 수 있습니다' 같은 완곡 표현을 사용하라."
     )
     user = f"""
-아래 자료(스크립트/메모리/RAG/추가법률)를 바탕으로 JSON으로만 답변해.
-- answer: 2문단(일반 설명 + "{{유형/관련법률}}" 연결 문장, 필요 시 정책/조례/지침은 본문에 보조로 언급)
-- sourcePages: '유형','관련법률' 배열 (법률/조문 중심, 정책/지침/조례는 제외)
+아래 자료(스크립트/메모리/RAG/추가법률)를 바탕으로 **JSON으로만** 답변해.
+
+- answer: **정확히 2문단**
+  1) 1문단: 즉시 취해야 할 구체적 조치(보고·기록·심리안정·차단/선종료 기준 등)와 실무 팁을 **4~6문장**으로 서술.
+  2) 2문단: 아래 문장으로 **반드시 시작** —
+     **"당신이 상담한 내용은 ‘{{유형명}}’에 해당할 수 있으며, 관련 법률로는 ‘{{법률명 조문번호}}’가 있습니다."**
+     이어서 각 법률을 **한 줄씩** 설명하되, **법률명만 굵게(예: - **형법 제307조**: …)** 표시하고 설명 문구는 굵게 하지 마.
+- sourcePages: [{{
+    "유형": "<악성민원 유형>",
+    "관련법률": "<법률명 제n조>"
+  }}] 의 배열만 작성. **마크다운/따옴표/괄호 설명 금지**. (예: "형법 제307조" OK, "형법 제307조(명예훼손)" 금지)
+
+- 참고자료가 부족해도 실제 **유형/법률명을 반드시 채워 넣어라**(합리적 추론). 확실치 않으면 "~일 수 있습니다" 같은 완곡 표현 사용.
 
 [대화 스크립트]
 {scripts_text or "(없음)"}
@@ -395,7 +422,7 @@ async def callchat_stream(body: StreamQuery):
                 # 6) answer를 2문단 구조로 보정
                 final_answer = ensure_two_paragraphs(model_answer, final_sources)
 
-                payload = {"answer": final_answer, "sourcePages": final_sources}
+                payload = {"answer": final_answer, "sourcePages": final_sources, "sourcePagesText": _format_sourcepages_pairs(final_sources)}
                 yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
                 yield "data: [END]\n\n"
 
