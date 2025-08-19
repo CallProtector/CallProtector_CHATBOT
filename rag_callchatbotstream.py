@@ -291,6 +291,9 @@ def keyword_additional_laws(question: str, scripts_text: str) -> str:
 
     return "\n---\n".join(out)
 
+def is_ask_customer_said(text: str) -> bool:
+    return any(k in text for k in ["뭐라고 했", "무슨 말", "고객", "한 말"])
+
 def build_prompts(mem_text: str, rag_text: str, scripts_text: str, question: str, add_laws_text: str) -> Tuple[str, str]:
     """단일 프롬프트. 스크립트 우선, RAG/추가법률/메모리는 보조."""
     sys = (
@@ -343,6 +346,16 @@ async def callchat_stream(body: StreamQuery):
             yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
             yield "data: [END]\n\n"
         return EventSourceResponse(smalltalk_events())
+    
+    # (0-2) 고객 발화 그대로 묻는 경우 → 스크립트 직접 반환
+    if is_ask_customer_said(body.question):
+        inbound_lines = [s.get("text","") for s in (body.context_scripts or []) if s.get("speaker")=="INBOUND"]
+        answer = "고객 발화 내용은 다음과 같습니다:\n- " + "\n- ".join(inbound_lines) if inbound_lines else "기록된 고객 발화가 없습니다."
+        async def direct_events():
+            payload = {"answer": answer, "sourcePages": []}
+            yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
+            yield "data: [END]\n\n"
+        return EventSourceResponse(direct_events())
 
     key = ns_key(body.session_id)
 
