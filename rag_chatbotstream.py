@@ -166,27 +166,35 @@ def _brief_for_law(law: str) -> str:
  # answer의 두 번째 문단을 생성 (유형/법률 나열 + 각 법률 설명)
 def _build_second_paragraph(sources: list[dict]) -> str:
     if not sources:
-        head = "당신이 상담한 내용은 **‘해당 유형’**을에 해당할 수 있으며, 관련 법률로는 **‘관련 법률’**이 있습니다."
+        head = "당신이 상담한 내용은 **‘해당 유형’**에 해당할 수 있으며, 관련 법률로는 **‘관련 법률’**이 있습니다."
         tail = "각 법률의 구체 적용은 상황에 따라 달라질 수 있으므로, 기관 지침과 법률 자문을 함께 참고하시길 권장드립니다."
         return f"{head}\n{tail}"
 
     typ = (sources[0].get("유형") or "해당 유형").strip()
-    laws = [e.get("관련법률", "").strip() for e in sources if e and e.get("관련법률")]
 
-    # ✅ 중복 제거 (순서 유지)
+    # ✅ 중복 제거
     seen = set()
-    unique_laws = []
-    for lw in laws:
-        if lw not in seen:
-            seen.add(lw)
-            unique_laws.append(lw)
+    unique_pairs = []
+    for e in sources:
+        t = (e.get("유형") or "").strip()
+        l = (e.get("관련법률") or "").strip()
+        if not l or (t, l) in seen:
+            continue
+        seen.add((t, l))
+        unique_pairs.append((t, l))
 
-    laws_str = "’, ‘".join(unique_laws) if unique_laws else "관련 법률"
+    laws_str = "’, ‘".join([l for _, l in unique_pairs]) if unique_pairs else "관련 법률"
 
     head = f"당신이 상담한 내용은 **‘{typ}’**에 해당할 수 있으며, 관련 법률로는 **‘{laws_str}’**가 있습니다."
-    lines = [f"- {law}: {_brief_for_law(law)}" for law in unique_laws]
-    tail = "\n".join(lines) if lines else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
-    return f"{head}\n{tail}"
+
+    # ✅ 쌍 단위 블록 생성 + 사이에 빈 줄
+    blocks = []
+    for t, l in unique_pairs:
+        block = f"- **유형:** {t}\n- **관련법률:** {l}\n  {_brief_for_law(l)}"
+        blocks.append(block)
+
+    tail = "\n\n".join(blocks) if blocks else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
+    return f"{head}\n\n{tail}"
 
 # 답변을 항상 2문단 구조로 보정 (첫 문단 보강, 두 번째 문단 재작성)
 def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
