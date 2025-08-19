@@ -222,67 +222,38 @@ async def analyze_call_session(request: Request):
     # ✅ 통화 내용 추출
     context_dialogue = "\n".join(f"{s['speaker']}: {s['text']}" for s in scripts)
 
-    # ✅ RAG용 질의 생성
+    # ✅ RAG 질의
     question = (
         "다음 상담 내용에서 고객이 성희롱, 폭언, 협박 등의 발언을 했다면 "
-        "어떤 법률 조항(법률명 + 조문번호 포함)이 적용될 수 있으며, 어떻게 대응해야 하는지 알려줘.\n\n"
+        "어떤 법률 조항(법률명 + 조문번호 포함)이 적용될 수 있으며, "
+        "어떻게 대응해야 하는지 알려줘.\n\n"
         f"{context_dialogue}"
     )
 
-    # ✅ RAG 문단 검색 + sourcePages(정규화/중복 제거된 상태로 반환)
-    rag_context, source_pages = retrieve_context(question)
+    # ✅ RAG 검색
+    rag_context, source_pages_rag = retrieve_context(question)
 
-    # ✅ 추가 법률 정보 삽입 (UI용 컨텍스트에만 추가)
+    # ✅ 추가 법률 정보 (UI 참고용)
     additional_laws = ""
-
     if "성희롱" in question:
-        additional_laws += (
-            "\n📚 성희롱 관련 법률:\n"
-            "- 성폭력범죄의 처벌 등에 관한 특례법 제13조: 2년 이하 징역 또는 2천만원 이하 벌금"
-        )
-
-    if "욕설" in question or "협박" in question or "폭언" in question:
-        additional_laws += (
-            "\n📚 욕설·협박·폭언 관련 법률:\n"
-            "- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n"
-            "- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금"
-        )
-
-    if "모욕" in question or "명예훼손" in question or "폭언" in question:
-        additional_laws += (
-            "\n📚 명예훼손·모욕·폭언 관련 법률:\n"
-            "- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n"
-            "- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
-        )
-
+        additional_laws += "\n📚 성희롱 관련 법률:\n- 성폭력범죄의 처벌 등에 관한 특례법 제13조: 2년 이하 징역 또는 2천만원 이하 벌금"
+    if any(k in question for k in ["욕설", "협박", "폭언"]):
+        additional_laws += "\n📚 욕설·협박·폭언 관련 법률:\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금"
+    if any(k in question for k in ["모욕", "명예훼손", "폭언"]):
+        additional_laws += "\n📚 명예훼손·모욕·폭언 관련 법률:\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
     if "업무방해" in question:
-        additional_laws += (
-            "\n📚 업무방해 관련 법률:\n"
-            "- 형법 제314조(업무방해): 5년 이하 징역 또는 1천5백만원 이하 벌금"
-        )
-
+        additional_laws += "\n📚 업무방해 관련 법률:\n- 형법 제314조(업무방해): 5년 이하 징역 또는 1천5백만원 이하 벌금"
     if "강요" in question:
-        additional_laws += (
-            "\n📚 강요 관련 법률:\n"
-            "- 형법 제324조(강요): 5년 이하 징역 또는 3천만원 이하 벌금"
-        )
-
-    if "장난전화" in question or "괴롭힘" in question or "반복적인 민원" in question:
-        additional_laws += (
-            "\n📚 장난전화/경범(강성 민원) 관련 법률:\n"
-            "- 경범죄처벌법 제3조 제1항 제40호: 10만원 이하 벌금, 구류, 과료"
-        )
-
+        additional_laws += "\n📚 강요 관련 법률:\n- 형법 제324조(강요): 5년 이하 징역 또는 3천만원 이하 벌금"
+    if any(k in question for k in ["장난전화", "괴롭힘", "반복적인 민원"]):
+        additional_laws += "\n📚 장난전화/경범(강성 민원) 관련 법률:\n- 경범죄처벌법 제3조 제1항 제40호: 10만원 이하 벌금, 구류, 과료"
     if "스토킹" in question:
-        additional_laws += (
-            "\n📚 스토킹 관련 법률:\n"
-            "- 스토킹범죄의 처벌 등에 관한 법률 제18조 제1항: 3년 이하 징역 또는 3천만원 이하 벌금"
-        )
+        additional_laws += "\n📚 스토킹 관련 법률:\n- 스토킹범죄의 처벌 등에 관한 법률 제18조 제1항: 3년 이하 징역 또는 3천만원 이하 벌금"
 
     if additional_laws:
         rag_context += "\n---\n" + additional_laws
 
-    # ✅ 프롬프트 작성
+    # ✅ 프롬프트 (원본 그대로 유지)
     prompt = f"""
 너는 악성민원 대응 및 관련 법률 자문을 돕는 전문가 AI야.
 
@@ -340,15 +311,39 @@ async def analyze_call_session(request: Request):
                     full_response += delta
                     yield f"{delta}\n\n"
 
-            # ✅ 최종 전송 전, source_pages를 한번 더 안전하게 후처리(중복/정규화/최대3)
-            source_pages_filtered = _post_filter_sources(source_pages, limit=3)
+            # --- 병합 로직 (callchat_stream과 동일) ---
+            # 1) 키워드 기반
+            kw_sources = keyword_pairs_first(context_dialogue + "\n" + question)
 
-            # ✅ 핵심: GPT가 만든 answer의 '두 번째 문단'을 sourcePages 기준으로 재작성 → 항상 일치!
-            final_answer = _ensure_two_paragraphs(full_response, source_pages_filtered)
-            
-            payload = {"answer": final_answer, "sourcePages": source_pages_filtered}
+            # 2) 모델 소스 (JSON 파싱 시도)
+            model_sources = []
+            try:
+                parsed = json.loads(full_response)
+                if isinstance(parsed, dict) and isinstance(parsed.get("sourcePages"), list):
+                    model_sources = [
+                        {"유형": (e.get("유형") or "").strip(),
+                         "관련법률": _normalize_law_name((e.get("관련법률") or "").strip())}
+                        for e in parsed["sourcePages"] if isinstance(e, dict)
+                    ]
+            except Exception:
+                pass
+
+            # 3) RAG 소스
+            rag_sources = source_pages_rag
+
+            # 4) 최종 병합 (kw → model → rag)
+            merged = kw_sources + model_sources + rag_sources
+
+            # 5) 후처리 (dedup/정규화/최대 3개)
+            final_sources = _post_filter_sources(merged, limit=3)
+
+            # 6) answer 보정 (두 번째 문단만 교체)
+            final_answer = _ensure_two_paragraphs(full_response, final_sources)
+
+            payload = {"answer": final_answer, "sourcePages": final_sources}
             yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
             yield "data: [END]\n\n"
+
         except Exception as e:
             yield f"data: [ERROR] {str(e)}\n\n"
             yield "data: [END]\n\n"
