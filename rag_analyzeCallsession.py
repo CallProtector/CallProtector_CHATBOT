@@ -83,10 +83,10 @@ async def analyze_call_session(request: Request):
     if "강요" in question:
         additional_laws += "\n📚 강요 관련 법률:\n- 형법 제324조(강요): 5년 이하 징역 또는 3천만원 이하 벌금"
 
-    if "장난전화" in question or "괴롭힘" in question:
+    if "장난전화" in question or "괴롭힘" in question or"반복적인 민원" in question:
         additional_laws += "\n📚 장난전화 관련 법률:\n- 경범죄처벌법 제3조 제1항 제40호: 10만원 이하 벌금, 구류, 과료"
 
-    if "스토킹" in question:
+    if "스토킹" in question  :
         additional_laws += "\n📚 스토킹 관련 법률:\n- 스토킹범죄의 처벌 등에 관한 법률 제18조 제1항: 3년 이하 징역 또는 3천만원 이하 벌금"
 
     if additional_laws:

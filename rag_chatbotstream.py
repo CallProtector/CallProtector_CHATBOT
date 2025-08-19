@@ -81,7 +81,7 @@ def keyword_pairs_first(text: str):
         add("업무방해", "형법 제314조")
     if "강요" in hay:
         add("강요", "형법 제324조")
-    if any(k in hay for k in ["장난전화", "괴롭힘"]):
+    if any(k in hay for k in ["장난전화", "괴롭힘","반복적인 민원"]):
         add("장난전화/경범", "경범죄처벌법 제3조 제1항 제40호")
     if "스토킹" in hay:
         add("스토킹", "스토킹범죄의 처벌 등에 관한 법률 제18조 제1항")
@@ -171,30 +171,25 @@ def _build_second_paragraph(sources: list[dict]) -> str:
         return f"{head}\n{tail}"
 
     typ = (sources[0].get("유형") or "해당 유형").strip()
+    # 법률만 모아 중복 제거(순서 유지)
+    laws = [e.get("관련법률", "").strip() for e in sources if e and e.get("관련법률")]
+    seen, unique_laws = set(), []
+    for lw in laws:
+        if lw and lw not in seen:
+            seen.add(lw)
+            unique_laws.append(lw)
 
-    # ✅ 중복 제거
-    seen = set()
-    unique_pairs = []
-    for e in sources:
-        t = (e.get("유형") or "").strip()
-        l = (e.get("관련법률") or "").strip()
-        if not l or (t, l) in seen:
-            continue
-        seen.add((t, l))
-        unique_pairs.append((t, l))
+    laws_str = "’, ‘".join(unique_laws) if unique_laws else "관련 법률"
 
-    laws_str = "’, ‘".join([l for _, l in unique_pairs]) if unique_pairs else "관련 법률"
-
+    # 머리 문장: 유형/법률 목록만 굵게
     head = f"당신이 상담한 내용은 **‘{typ}’**에 해당할 수 있으며, 관련 법률로는 **‘{laws_str}’**가 있습니다."
 
-    # ✅ 쌍 단위 블록 생성 + 사이에 빈 줄
-    blocks = []
-    for t, l in unique_pairs:
-        block = f"- **유형:** {t}\n- **관련법률:** {l}\n  {_brief_for_law(l)}"
-        blocks.append(block)
+    # ✅ 각 항목: **법률명**만 굵게 + 한 줄 설명, 항목 사이 ‘한 줄’ 간격
+    lines = [f"- **{law}**: {_brief_for_law(law)}" for law in unique_laws]
+    tail = "\n".join(lines) if lines else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
 
-    tail = "\n\n".join(blocks) if blocks else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
-    return f"{head}\n\n{tail}"
+    return f"{head}\n{tail}"
+
 
 # 답변을 항상 2문단 구조로 보정 (첫 문단 보강, 두 번째 문단 재작성)
 def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
@@ -265,6 +260,22 @@ def _post_filter_sources(sources, limit=3):
 
     return out
 
+
+# 유형-관련법률 쌍 단위로 묶어서 줄바꿈 사이에 넣어주는 함수
+def format_sourcepages_for_answer(sources: list[dict]) -> str:
+    if not sources:
+        return ""
+
+    blocks = []
+    for e in sources:
+        t = e.get("유형", "").strip()
+        l = e.get("관련법률", "").strip()
+        if not t or not l:
+            continue
+        block = f"- 유형: {t}\n- 관련법률: {l}"
+        blocks.append(block)
+
+    return "\n\n".join(blocks)
 
 # ✅ 5. 유사 문단 검색 (본문+메타데이터 포함)
 # Pinecone에서 query와 유사 문단 검색 후 context와 sourcePages 반환
@@ -404,7 +415,7 @@ async def stream_chat(query: Query):
         # ✅ answer 2문단/시작문장/요약 강제 보정
         final_answer = _ensure_two_paragraphs(model_answer, final_sources)
 
-        payload = {"answer": final_answer, "sourcePages": final_sources}
+        payload = {"answer": final_answer, "sourcePages": final_sources, "sourcePagesText": format_sourcepages_for_answer(final_sources)}
         yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
         yield "data: [END]\n\n"
 

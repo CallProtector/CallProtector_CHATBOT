@@ -126,7 +126,7 @@ def keyword_pairs_first(text: str) -> list[dict]:
         add("업무방해","형법 제314조")
     if "강요" in hay:
         add("강요","형법 제324조")
-    if any(k in hay for k in ["장난전화","괴롭힘"]):
+    if any(k in hay for k in ["장난전화","괴롭힘","반복적인 민원"]):
         add("장난전화/경범","경범죄처벌법 제3조 제1항 제40호")
     if "스토킹" in hay:
         add("스토킹","스토킹범죄의 처벌 등에 관한 법률 제18조")
