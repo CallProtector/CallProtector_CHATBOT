@@ -160,7 +160,7 @@ def _brief_for_law(law: str) -> str:
 
 def _build_second_paragraph(sources: list[dict]) -> str:
     if not sources:
-        return ("당신이 상담한 내용은 ‘해당 유형’에 해당할 수 있으며, 관련 법률로는 ‘해당 법률’이 있습니다.\n"
+        return ("당신이 상담한 내용은 **‘해당 유형’**에 해당할 수 있으며, 관련 법률로는 **‘해당 법률’**이 있습니다.\n"
                 "각 법률의 적용은 상황에 따라 달라질 수 있으니 기관 지침과 법률 자문을 함께 참고하세요.")
     typ = (sources[0].get("유형") or "해당 유형").strip()
     laws = []
@@ -170,7 +170,7 @@ def _build_second_paragraph(sources: list[dict]) -> str:
         if not l or l in seen: continue
         seen.add(l)
         laws.append(l)
-    head = f"당신이 상담한 내용은 ‘{typ}’에 해당할 수 있으며, 관련 법률로는 ‘" + "’, ‘".join(laws) + "’가 있습니다."
+    head = f"당신이 상담한 내용은 **‘{typ}’**에 해당할 수 있으며, 관련 법률로는 **‘" + "’, ‘".join(laws) + "’**가 있습니다."
     bullets = "\n".join([f"- {l}: {_brief_for_law(l)}" for l in laws])
     return head + "\n" + bullets
 
@@ -235,9 +235,9 @@ def retrieve_context(query: str, top_k: int = 5) -> tuple[str, list[dict]]:
 
         # 화면용 블록
         blocks.append(
-            f"📌 유형: {typ or '정보없음'}\n"
+            f"📌 **유형**: {typ or '정보없음'}\n"
             f"📖 본문: {meta.get('본문','')}\n"
-            f"⚖ 관련 법률: {law_raw or '정보없음'}\n"
+            f"⚖ **관련 법률**: {law_raw or '정보없음'}\n"
             f"📝 요약: {meta.get('요약','')}\n"
         )
         # JSON용 sourcePages (정규화 + 분할 + dedup)

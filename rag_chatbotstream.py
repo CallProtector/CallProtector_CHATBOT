@@ -166,7 +166,7 @@ def _brief_for_law(law: str) -> str:
  # answer의 두 번째 문단을 생성 (유형/법률 나열 + 각 법률 설명)
 def _build_second_paragraph(sources: list[dict]) -> str:
     if not sources:
-        head = "당신이 상담한 내용은 ‘해당 유형’을에 해당할 수 있으며, 관련 법률로는 ‘관련 법률’이 있습니다."
+        head = "당신이 상담한 내용은 **‘해당 유형’**을에 해당할 수 있으며, 관련 법률로는 **‘관련 법률’**이 있습니다."
         tail = "각 법률의 구체 적용은 상황에 따라 달라질 수 있으므로, 기관 지침과 법률 자문을 함께 참고하시길 권장드립니다."
         return f"{head}\n{tail}"
 
@@ -183,7 +183,7 @@ def _build_second_paragraph(sources: list[dict]) -> str:
 
     laws_str = "’, ‘".join(unique_laws) if unique_laws else "관련 법률"
 
-    head = f"당신이 상담한 내용은 ‘{typ}’에 해당할 수 있으며, 관련 법률로는 ‘{laws_str}’가 있습니다."
+    head = f"당신이 상담한 내용은 **‘{typ}’**에 해당할 수 있으며, 관련 법률로는 **‘{laws_str}’**가 있습니다."
     lines = [f"- {law}: {_brief_for_law(law)}" for law in unique_laws]
     tail = "\n".join(lines) if lines else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
     return f"{head}\n{tail}"
@@ -276,9 +276,9 @@ def retrieve_context(query: str, top_k: int = 2):
         law = (meta.get("관련 법률") or "").strip() or "없음"
 
         context_blocks.append(
-            f"📌 유형: {typ}\n"
+            f"📌 **유형:** {typ}\n"
             f"📖 본문: {meta.get('본문', '')}\n"
-            f"⚖ 관련 법률: {law}\n"
+            f"⚖ **관련 법률**: {law}\n"
             f"📝 요약: {meta.get('요약', '')}\n"
         )
         # ✅ 최종 JSON에서는 '관련법률'(띄어쓰기 없음)
