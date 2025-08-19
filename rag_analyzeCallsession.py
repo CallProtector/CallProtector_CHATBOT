@@ -20,6 +20,31 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index_name = os.getenv("PINECONE_INDEX", "legal-guideline-usw2")
 index = pc.Index(index_name)
 
+
+# ---- 키워드 → (유형,법률) 1차 힌트 ----
+def keyword_pairs_first(text: str) -> list[dict]:
+    hay = (text or "")
+    out = []
+    def add(u,l): out.append({"유형":u,"관련법률":l})
+
+    if any(k in hay for k in ["성희롱","음란","음담"]):
+        add("성희롱/음란발언","성폭력범죄의 처벌 등에 관한 특례법 제13조")
+    if any(k in hay for k in ["욕설","협박","폭언"]):
+        add("협박/폭행(폭언) 가능성","형법 제283조; 형법 제260조")
+    if any(k in hay for k in ["모욕","명예훼손","폭언"]):
+        add("명예훼손·모욕·폭언","형법 제307조; 형법 제311조")
+    if "업무방해" in hay:
+        add("업무방해","형법 제314조")
+    if "강요" in hay:
+        add("강요","형법 제324조")
+    if any(k in hay for k in ["장난전화","괴롭힘"]):
+        add("장난전화/경범","경범죄처벌법 제3조 제1항 제40호")
+    if any(k in hay for k in ["반복적인 민원"]):
+        add("반복(고질.강성민원)", "경범죄처벌법 제3조 제1항 제40호")
+    if "스토킹" in hay:
+        add("스토킹","스토킹범죄의 처벌 등에 관한 법률 제18조")
+    return out[:5]
+
 # ✅ 법률 한 줄 요약 사전 (특정 조항 설명)
 _LAW_BRIEFS = {
     "성폭력범죄의 처벌 등에 관한 특례법 제13조": "통신수단을 이용한 음란·성적 수치심 유발 행위를 처벌합니다. 이는 2년 이하 징역 또는 2천만원 이하 벌금형에 해당합니다. ",
@@ -113,24 +138,7 @@ def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
 
     return "\n\n".join(paras)
 
-def _ensure_two_paragraphs_with_priority(answer: str, final_sources: list[dict]) -> str:
-    text = (answer or "").strip()
-    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
 
-    if not paras:
-        paras = ["상황 기록, 증거 보존, 상급자 보고, 심리적 안정 확보 등 즉시 조치를 진행하세요."]
-
-    # 첫 문단이 너무 짧으면 보강
-    first_sentences = [s for s in (paras[0].split("。") if "。" in paras[0] else paras[0].split(".")) if s.strip()]
-    if len(first_sentences) < 4:
-        supplement = "사건 직후에는 통화 선종료 기준과 차단 방침을 숙지하고, 재발 방지를 위해 안내 멘트를 활용하세요. 내부 기록 시스템에 시간·상황·발언 내용을 구체적으로 남기고, 필요 시 보호 조치를 즉시 요청하세요."
-        paras[0] = (paras[0] + " " + supplement).strip()
-
-    # ✅ GPT 본문(📜 블록 포함)은 건드리지 않고, 마지막에만 우리 요약을 '부록'으로 추가
-    appendix = "👩⚖️법적으로 이렇게 대응할 수 있어요!\n" + _build_second_paragraph(final_sources)
-    paras.append(appendix)
-
-    return "\n\n".join(paras)
 
 
 def _normalize_law_name(law: str) -> str:
@@ -336,7 +344,7 @@ async def analyze_call_session(request: Request):
             source_pages_filtered = _post_filter_sources(source_pages, limit=3)
 
             # ✅ 핵심: GPT가 만든 answer의 '두 번째 문단'을 sourcePages 기준으로 재작성 → 항상 일치!
-            final_answer = _ensure_two_paragraphs_with_priority(full_response, source_pages_filtered)
+            final_answer = _ensure_two_paragraphs(full_response, source_pages_filtered)
             
             payload = {"answer": final_answer, "sourcePages": source_pages_filtered}
             yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
