@@ -20,7 +20,7 @@ index = pc.Index(index_name)
 # ---- in-memory session ----
 MAX_TURNS = 8
 session_memory: Dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_TURNS))
-session_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+session_locks: Dict[str, asyncio.Lock] = defaultdict(lambda: asyncio.Lock())
 
 # ---- request model ----
 class StreamQuery(BaseModel):
@@ -30,13 +30,12 @@ class StreamQuery(BaseModel):
     context_scripts: Optional[List[Dict[str, str]]] = None
 
 # ---- helpers ----
+
+
 def ns_key(session_id: int) -> str:
     # CALL/CHAT 통합 네임스페이스
     return "call:" + str(session_id)
 
-def _ok(v: Optional[str]) -> bool:
-    v = (v or "").strip()
-    return bool(v) and v not in ("없음", "정보없음")
 
 def legal_like(s: str) -> bool:
     """정책/지침/조례 등은 제외하고, 법률/조문 형태만 허용하기 위한 간단한 필터."""
@@ -45,6 +44,155 @@ def legal_like(s: str) -> bool:
     if any(k in low for k in exclude_kw):
         return False
     return True  # 간단 필터: 법률명/조문 텍스트는 허용
+
+# ---- smalltalk ----
+SMALLTALK_KWS = [
+    "안녕","안뇽","하이","hi","hello","헬로","헤이","방가","ㅎㅇ","그냥",
+    "잘 지내","뭐해","심심해","심심","ㅎㅎ","ㅋㅋ","굿모닝","굿밤","잘자","좋은 아침","수고","고마워","땡큐","감사","thanks","thx","ㄳ"
+]
+
+def is_smalltalk(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return any(k in t for k in SMALLTALK_KWS)
+
+def smalltalk_reply(text: str) -> str:
+    t = (text or "").lower()
+    if any(k in t for k in ["안녕","안뇽","하이","hello","hi","헬로","헤이","방가","ㅎㅇ"]):
+        return "안녕하세요! 만나서 반가워요 😊 무엇을 도와드릴까요?"
+    if any(k in t for k in ["굿모닝","좋은 아침"]):
+        return "안녕하세요! 잘 지내셨나요? 😊 무엇을 도와드릴까요?"
+    if any(k in t for k in ["굿밤","잘자"]):
+        return "고마워요! 편안한 밤 되세요 🌛"
+    if any(k in t for k in ["고마워","감사","땡큐","thx","thanks","수고","ㄳ"]):
+        return "별말씀을요! 도움이 되어 기뻐요. 또 궁금한 점 있으면 편하게 물어보세요."
+    if any(k in t for k in ["뭐해","심심해","심심"]):
+        return "여기 있어요! 질문을 기다리는 중이에요. 어떤 도움이 필요하신가요?"
+    if any(k in t for k in ["ㅎㅎ","ㅋㅋ","그냥"]):
+        return "헤헤 😄 농담도 좋아요. 이제 본론으로—무엇을 도와드릴까요?"
+    return "안녕하세요! 편하게 말씀해 주세요. 민원/상담 관련도 좋고, 일반적인 질문도 환영해요."
+
+# ---- 법률명 정규화/후처리 ----
+import re
+
+def _normalize_law_name(law: str) -> str:
+    if not law:
+        return ""
+    # 괄호/주석 제거, 공백 정리
+    return re.sub(r"\s*\(.*?\)", "", law).strip()
+
+def _ok(v: str | None) -> bool:
+    v = (v or "").strip()
+    return bool(v) and v not in ("없음", "정보없음")
+
+def _post_filter_sources(sources: list[dict], limit: int = 3) -> list[dict]:
+    """
+    - 법률명 기준 dedup (유형 달라도 같은 법률이면 1개만)
+    - '없음' 제거, 괄호 제거, ';' ',' 분할
+    - 최대 limit개 유지
+    """
+    out, seen = [], set()
+    for e in sources or []:
+        typ = (e.get("유형") or "").strip()
+        raw = (e.get("관련법률") or "").strip()
+        if not (_ok(typ) and _ok(raw)):
+            continue
+        # 여러 개 한 줄일 수 있음
+        for lw in [x.strip() for x in re.split(r"[;,]", raw) if x.strip()]:
+            norm = _normalize_law_name(lw)
+            if not norm:
+                continue
+            key = norm.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"유형": typ, "관련법률": norm})
+            if len(out) >= limit:
+                return out
+    return out
+
+# ---- 키워드 → (유형,법률) 1차 힌트 ----
+def keyword_pairs_first(text: str) -> list[dict]:
+    hay = (text or "")
+    out = []
+    def add(u,l): out.append({"유형":u,"관련법률":l})
+
+    if any(k in hay for k in ["성희롱","음란","음담"]):
+        add("성희롱/음란발언","성폭력범죄의 처벌 등에 관한 특례법 제13조")
+    if any(k in hay for k in ["욕설","협박","폭언"]):
+        add("협박/폭행(폭언) 가능성","형법 제283조; 형법 제260조")
+    if any(k in hay for k in ["모욕","명예훼손","폭언"]):
+        add("명예훼손·모욕·폭언","형법 제307조; 형법 제311조")
+    if "업무방해" in hay:
+        add("업무방해","형법 제314조")
+    if "강요" in hay:
+        add("강요","형법 제324조")
+    if any(k in hay for k in ["장난전화","괴롭힘"]):
+        add("장난전화/경범","경범죄처벌법 제3조 제1항 제40호")
+    if "스토킹" in hay:
+        add("스토킹","스토킹범죄의 처벌 등에 관한 법률 제18조")
+    return out[:5]
+
+
+# ---- 2문단 보정(두 번째 문단 = 유형·법률 연결문 + 법률별 1줄 요약) ----
+_LAW_BRIEFS = {
+    "성폭력범죄의 처벌 등에 관한 특례법 제13조": "통신수단을 이용한 성적 수치심 유발 행위를 처벌합니다. (2년 이하 징역 또는 2천만원 이하 벌금)",
+    "형법 제283조": "상대에게 공포심을 유발하는 협박 행위를 처벌합니다. (3년 이하 징역 또는 500만원 이하 벌금)",
+    "형법 제260조": "상대방 신체에 대한 유형력 행사(폭행)를 처벌합니다. (2년 이하 징역 또는 500만원 이하 벌금)",
+    "형법 제307조": "허위/사실 적시로 타인의 명예를 훼손하는 행위를 처벌합니다. (2년 이하 징역 또는 500만원 이하 벌금)",
+    "형법 제311조": "공연한 모욕행위를 처벌합니다. (1년 이하 징역 또는 200만원 이하 벌금)",
+    "형법 제314조": "위력 기타 방법으로 타인의 업무를 방해하는 행위를 처벌합니다. (5년 이하 징역 또는 1천5백만원 이하 벌금)",
+    "형법 제324조": "폭행/협박 등으로 의사에 반해 의무 없는 일을 하게 하는 강요를 처벌합니다. (5년 이하 징역 또는 3천만원 이하 벌금)",
+    "경범죄처벌법 제3조 제1항 제40호": "정당한 이유 없는 반복 전화 등 괴롭힘을 제재합니다. (10만원 이하 벌금·구류·과료)",
+    "스토킹범죄의 처벌 등에 관한 법률 제18조": "지속·반복적 스토킹 범죄를 처벌하고 보호조치를 규정합니다. (3년 이하 징역 또는 3천만원 이하 벌금)",
+    "국민권익위원회 상담사 보호 지침": "상담 과정에서 발생하는 욕설·폭언·성희롱 등 악·강성 민원으로부터 상담사를 보호하기 위해 마련된 제도적 지침입니다. 상담 종료 기준, 기록 관리, 보호 조치 절차 등을 규정합니다."
+}
+def _brief_for_law(law: str) -> str:
+    # 사전에 없으면 간략 fallback
+    if law in _LAW_BRIEFS: return _LAW_BRIEFS[law]
+    low = (law or "").lower()
+    if "협박" in low: return "협박 행위 전반을 처벌합니다."
+    if "폭행" in low: return "타인에 대한 유형력 행사(폭행)를 처벌합니다."
+    if "모욕" in low: return "공연한 모욕을 처벌합니다."
+    if "명예훼손" in low: return "허위/사실 적시 명예훼손을 처벌합니다."
+    if "업무방해" in low: return "업무 수행을 방해하는 행위를 처벌합니다."
+    if "스토킹" in low: return "지속·반복적 스토킹을 처벌합니다."
+    return "관련 행위를 규율·제재하여 피해 방지를 도모합니다."
+
+def _build_second_paragraph(sources: list[dict]) -> str:
+    if not sources:
+        return ("당신이 상담한 내용은 ‘해당 유형’에 해당할 수 있으며, 관련 법률로는 ‘해당 법률’이 있습니다.\n"
+                "각 법률의 적용은 상황에 따라 달라질 수 있으니 기관 지침과 법률 자문을 함께 참고하세요.")
+    typ = (sources[0].get("유형") or "해당 유형").strip()
+    laws = []
+    seen = set()
+    for e in sources:
+        l = (e.get("관련법률") or "").strip()
+        if not l or l in seen: continue
+        seen.add(l)
+        laws.append(l)
+    head = f"당신이 상담한 내용은 ‘{typ}’에 해당할 수 있으며, 관련 법률로는 ‘" + "’, ‘".join(laws) + "’가 있습니다."
+    bullets = "\n".join([f"- {l}: {_brief_for_law(l)}" for l in laws])
+    return head + "\n" + bullets
+
+def ensure_two_paragraphs(answer: str, sources: list[dict]) -> str:
+    text = (answer or "").strip()
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not paras:
+        paras = ["상황 기록, 증거 보존, 상급자 보고, 심리 안정 확보 등 즉시 조치를 진행하세요."]
+    second = _build_second_paragraph(sources)
+    if len(paras) == 1:
+        paras.append(second)
+    else:
+        paras[1] = second
+    # 1문단이 너무 짧으면 보강
+    first = paras[0]
+    sents = [s for s in re.split(r"[.。]\s*", first) if s.strip()]
+    if len(sents) < 4:
+        supplement = (" 통화 선종료·차단 기준을 숙지하고, 재발 방지를 위한 안내 멘트를 사용하세요. "
+                      "내부 시스템에 시간/상황/발언을 구체 기록하고 즉시 보호조치를 요청하세요.")
+        paras[0] = (first + supplement).strip()
+    return "\n\n".join(paras)
+
 
 def merge_unique(*lists: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """(유형, 관련법률) 기준으로 앞쪽 리스트 우선 병합."""
@@ -67,35 +215,42 @@ def merge_unique(*lists: List[Dict[str, str]]) -> List[Dict[str, str]]:
             out.append({"유형": typ, "관련법률": law})
     return out
 
-def retrieve_context(query: str, top_k: int = 5) -> Tuple[str, List[Dict[str, str]]]:
-    """Pinecone RAG: 본문+메타 포함, 중복/저신뢰 제거."""
-    emb = client.embeddings.create(input=[query], model="text-embedding-3-small" ).data[0].embedding
+def retrieve_context(query: str, top_k: int = 5) -> tuple[str, list[dict]]:
+    emb = client.embeddings.create(input=[query], model="text-embedding-3-small").data[0].embedding
     results = index.query(vector=emb, top_k=top_k, include_metadata=True, include_values=False)
 
     blocks, sources, seen = [], [], set()
-    for m in results.get("matches", []):
-        if m.get("score", 0) < 0.2:
+    matches = getattr(results, "matches", None) or (results.get("matches", []) if isinstance(results, dict) else [])
+
+    for m in matches:
+        score = getattr(m, "score", None)
+        if score is None and isinstance(m, dict):
+            score = m.get("score", 0)
+        if (score or 0) < 0.2:
             continue
-        meta = m.get("metadata", {}) or {}
+
+        meta = getattr(m, "metadata", None) or (m.get("metadata", {}) if isinstance(m, dict) else {}) or {}
         typ = (meta.get("유형") or "").strip()
-        law = (meta.get("관련 법률") or "").strip()
-        if not _ok(typ) and not _ok(law):
-            continue
+        law_raw = (meta.get("관련 법률") or "").strip()
 
-        dedup_key = (typ, law)
-        if dedup_key in seen:
-            continue
-        seen.add(dedup_key)
-
+        # 화면용 블록
         blocks.append(
             f"📌 유형: {typ or '정보없음'}\n"
             f"📖 본문: {meta.get('본문','')}\n"
-            f"⚖ 관련 법률: {law or '정보없음'}\n"
+            f"⚖ 관련 법률: {law_raw or '정보없음'}\n"
             f"📝 요약: {meta.get('요약','')}\n"
         )
-        # 최종 JSON에서는 '관련법률'(띄어쓰기 없음) 키로 통일
-        sources.append({"유형": typ or "정보없음", "관련법률": law or "정보없음"})
+        # JSON용 sourcePages (정규화 + 분할 + dedup)
+        if _ok(law_raw):
+            for lw in [x.strip() for x in re.split(r"[;,]", law_raw) if x.strip()]:
+                norm = _normalize_law_name(lw)
+                key = (typ, norm)
+                if not _ok(typ) or not _ok(norm) or key in seen:
+                    continue
+                seen.add(key)
+                sources.append({"유형": typ, "관련법률": norm})
     return "\n---\n".join(blocks), sources
+
 
 def scripts_to_text(scripts: Optional[List[Dict[str, str]]], max_lines: int = 60) -> str:
     if not scripts:
@@ -107,30 +262,6 @@ def scripts_to_text(scripts: Optional[List[Dict[str, str]]], max_lines: int = 60
         lines.append(f"{spk}: {txt}")
     return "\n".join(lines)
 
-def law_hints_from_text(text: str) -> List[Dict[str, str]]:
-    """룰 기반 최소 보강: 질문/스크립트 키워드에서 대표 조문 힌트."""
-    t = (text or "").lower()
-    hints: List[Dict[str, str]] = []
-
-    def add(u: str, l: str):
-        hints.append({"유형": u, "관련법률": l})
-
-    if any(k in t for k in ["성희롱", "음란", "음담"]):
-        add("성희롱/음란발언", "성폭력범죄의 처벌 등에 관한 특례법 제13조")
-    if any(k in t for k in ["욕설", "협박","폭언"]):
-        add("모욕/협박/폭행/폭언", "형법 제283조, 제260조")
-    if any(k in t for k in ["모욕", "명예훼손","폭언"]):
-        add("명예훼손/모욕/폭언", "형법 제307조, 제311조")
-    if "업무방해" in t:
-        add("업무방해", "형법 제314조")
-    if "강요" in t:
-        add("강요", "형법 제324조")
-    if any(k in t for k in ["장난전화", "괴롭힘"]):
-        add("장난전화/경범", "경범죄처벌법 제3조 제1항 제40호")
-    if "스토킹" in t:
-        add("스토킹", "스토킹범죄의 처벌 등에 관한 법률 제18조")
-    return hints[:5]
-
 def keyword_additional_laws(question: str, scripts_text: str) -> str:
     """키워드 기반 추가 법률 설명(본문에만 쓰는 참고 섹션)."""
     hay = (question or "") + "\n" + (scripts_text or "")
@@ -138,10 +269,10 @@ def keyword_additional_laws(question: str, scripts_text: str) -> str:
 
     if any(k in hay for k in ["성희롱", "음란", "음담"]):
         out.append("📚 성희롱 관련 법률:\n- 성폭력범죄의 처벌 등에 관한 특례법 제13조: 2년 이하 징역 또는 2천만원 이하 벌금")
-    if any(k in hay for k in ["욕설", "협박"]):
-        out.append("📚 욕설·협박 관련 법률:\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금")
-    if any(k in hay for k in ["모욕", "명예훼손"]):
-        out.append("📚 명예훼손·모욕 관련 법률:\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금")
+    if any(k in hay for k in ["욕설", "협박","폭언"]):
+        out.append("📚 욕설·협박·폭언 관련 법률:\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금")
+    if any(k in hay for k in ["모욕", "명예훼손","폭언"]):
+        out.append("📚 명예훼손·모욕·폭언 관련 법률:\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금")
     if "업무방해" in hay:
         out.append("📚 업무방해 관련 법률:\n- 형법 제314조(업무방해): 5년 이하 징역 또는 1천5백만원 이하 벌금")
     if "강요" in hay:
@@ -184,24 +315,17 @@ def build_prompts(mem_text: str, rag_text: str, scripts_text: str, question: str
 """
     return sys, user
 
-def clean_source_pages(entries) -> List[Dict[str, str]]:
-    """모델이 준 sourcePages 정제 + 정책성 제거."""
-    if not isinstance(entries, list):
-        return []
-    cleaned = []
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        cleaned.append({
-            "유형": (e.get("유형") or "").strip(),
-            "관련법률": (e.get("관련법률") or "").strip()
-        })
-    # 유효/법률형만 필터
-    return [e for e in cleaned if _ok(e["유형"]) and _ok(e["관련법률"]) and legal_like(e["유형"] + " " + e["관련법률"])]
-
 # ---- unified endpoint ----
 @router.post("/stream")
 async def callchat_stream(body: StreamQuery):
+    # (0) 스몰토크면 즉시 종료
+    if is_smalltalk(body.question):
+        async def smalltalk_events():
+            payload = {"answer": smalltalk_reply(body.question), "sourcePages": []}
+            yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
+            yield "data: [END]\n\n"
+        return EventSourceResponse(smalltalk_events())
+
     key = ns_key(body.session_id)
 
     # (1) 메모리
@@ -214,7 +338,7 @@ async def callchat_stream(body: StreamQuery):
     # (3) RAG
     rag_text, source_pages_rag = retrieve_context(body.question)
 
-    # (4) 키워드 기반 추가 법률(본문 보조 설명용)
+    # (4) 본문 보조 설명(선택): 기존 keyword_additional_laws 유지
     add_laws_text = keyword_additional_laws(body.question, scripts_text)
 
     # (5) 프롬프트
@@ -238,39 +362,50 @@ async def callchat_stream(body: StreamQuery):
                         full += delta
                         yield f"data: {delta}\n\n"
 
-                # (7) --- sourcePages 생성 우선순위 ---
-                # 1) 키워드 기반(최상위 신뢰)
-                kw_sources = law_hints_from_text((scripts_text + "\n" + body.question).strip())
+                # --- 병합 로직 ---
+                # 1) 키워드 기반 1차 힌트
+                kw_sources = keyword_pairs_first((scripts_text + "\n" + body.question).strip())
 
-                # 2) 모델 결과(정제)
-                gpt_sources_clean = []
-                answer_text = full
+                # 2) 모델 파싱
+                model_answer = full
+                model_sources = []
                 try:
                     parsed = json.loads(full)
-                    answer_text = parsed.get("answer", full)
-                    gpt_sources_clean = clean_source_pages(parsed.get("sourcePages"))
+                    if isinstance(parsed, dict):
+                        model_answer = parsed.get("answer", model_answer)
+                        if isinstance(parsed.get("sourcePages"), list):
+                            model_sources = [
+                                {"유형": (e.get("유형") or "").strip(),
+                                 "관련법률": _normalize_law_name((e.get("관련법률") or "").strip())}
+                                for e in parsed["sourcePages"]
+                                if isinstance(e, dict)
+                            ]
                 except Exception:
                     pass
 
-                # 3) RAG(정책/조례 등 제거된 상태: retrieve_context에서 이미 정리)
-                rag_sources_clean = clean_source_pages(source_pages_rag)
+                # 3) RAG 소스는 이미 정규화됨
+                rag_sources = source_pages_rag
 
-                # 4) 병합: kw → gpt → rag
-                out_source = merge_unique(kw_sources, gpt_sources_clean, rag_sources_clean)
+                # 4) 우선순위 병합: 키워드 → 모델 → RAG
+                merged = merge_unique(kw_sources, model_sources, rag_sources)
 
-                # 5) 그래도 비면 최소 힌트 유지(kw_sources 그대로)
-                if not out_source:
-                    out_source = merge_unique(kw_sources)
+                # 5) 최종 후처리(분할/정규화/중복 제거/최대 3개)
+                final_sources = _post_filter_sources(merged, limit=3)
 
-                payload = {"answer": answer_text, "sourcePages": out_source}
+                # 6) answer를 2문단 구조로 보정
+                final_answer = ensure_two_paragraphs(model_answer, final_sources)
+
+                payload = {"answer": final_answer, "sourcePages": final_sources}
                 yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
                 yield "data: [END]\n\n"
 
-                mem.append({"q": body.question, "a": answer_text})
+                # (메모리 업데이트)
+                mem.append({"q": body.question, "a": final_answer})
 
         except Exception:
             fail = json.dumps({"answer": "일시적 오류가 발생했습니다.", "sourcePages": []}, ensure_ascii=False)
             yield f"data: [JSON]{fail}\n\n"
             yield "data: [END]\n\n"
+    # SSE 버퍼링 방지 헤더
+    return EventSourceResponse(gen(), headers={"X-Accel-Buffering": "no"})
 
-    return EventSourceResponse(gen())
