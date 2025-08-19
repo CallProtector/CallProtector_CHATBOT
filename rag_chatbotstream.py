@@ -88,6 +88,26 @@ def _merge_sources(primary, *others):
         push_list(o)
     return merged
 
+# '관련법률: 없음' 항목을 제거  
+def _post_filter_sources(sources, limit=3):
+    """
+    - 비법률/빈값/‘없음’ 제거
+    - 최대 limit개로 제한
+    """
+    out = []
+    for e in sources:
+        if not e:
+            continue
+        typ = (e.get("유형") or "").strip()
+        law = (e.get("관련법률") or "").strip()
+        if not typ or not law or law == "없음":
+            continue
+        out.append({"유형": typ, "관련법률": law})
+        if len(out) >= limit:
+            break
+    return out
+
+
 # ✅ 5. 유사 문단 검색 (본문+메타데이터 포함)
 def retrieve_context(query: str, top_k: int = 2):
     embedding = client.embeddings.create(
@@ -110,8 +130,10 @@ def retrieve_context(query: str, top_k: int = 2):
             f"⚖ 관련 법률: {law}\n"
             f"📝 요약: {meta.get('요약', '')}\n"
         )
-        # 최종 JSON에서는 '관련법률'(띄어쓰기 없음)
-        source_pages.append({"유형": typ, "관련법률": law})
+        # ✅ 최종 JSON에서는 '관련법률'(띄어쓰기 없음)
+        # ✅ '없음'은 제외해 sourcePages 정합성 보장
+        if law and law != "없음":
+            source_pages.append({"유형": typ, "관련법률": law})
 
     return "\n---\n".join(context_blocks), source_pages
 
@@ -130,13 +152,23 @@ async def stream_chat(query: Query):
 아래 참고 자료를 바탕으로 사용자의 질문에 대해 자연스럽고 자세한 문장으로 답변해줘.
 
 반드시 JSON으로만 출력하고, 코드 블록은 쓰지 마. 모든 출력은 자연스러운 한글이어야 해.
+영어 토큰(예: TYPE), 자리표시자(예: {{유형}})는 절대 사용하지 마. 한국 법령 기준으로 설명해.
 
-- answer: 두 문단으로 작성
-  1) 사용자의 질문에 대한 일반적이고 자연스러운 답변
-  2) "당신이 상담한 내용은 ~유형에 포함되며, 관련 법률로는 ~가 있습니다." 형식으로 설명
-     (정책·지침·조례 등은 answer 본문에서 보조로 언급해도 되지만, sourcePages에는 법률·조문 위주로 작성)
+- answer는 **정확히 2문단**으로 작성:
+  (1문단) 즉시 취해야 할 구체적 조치(보고·기록·심리안정·차단/선종료 기준 등)와 실무 팁을 **4~6문장**으로 서술.
+  (2문단) **"당신이 상담한 내용은 ‘{{유형명}}’에 해당할 수 있으며, 관련 법률로는 ‘{{법률명 조문번호}}’가 있습니다."**로 시작.
+         이어서 **각 법률마다 1줄**로 핵심 적용 취지를 덧붙여 설명
+         (예: 성폭력범죄의 처벌 등에 관한 특례법 제13조(통신매체이용음란): 통신수단으로 성적 수치심을 유발하는 행위를 처벌).
+- sourcePages: 아래 참고자료 및 네 추론에 따라 '유형'과 '관련법률'만 배열로 정리(법률·조문 위주).
 
-- sourcePages: 아래 참고자료의 '유형'과 '관련법률'만 배열로 정리
+
+💡 참고 자료만으로 충분하지 않은 경우의 규칙:
+- 만약 아래 참고 자료에서 사용자의 질문과 관련된 유형/법률 정보를 충분히 찾지 못하더라도,
+  네가 가진 일반 지식에 기반해 적절한 악성민원 유형과 관련 법률(또는 지침)을 **추론**해서
+  answer와 sourcePages에 **함께 포함**해줘.
+- 다만 확실하지 않은 경우에는 "해당될 수 있습니다", "관련될 수 있습니다"처럼 **완곡한 표현**을 사용해.
+- 법률·조문을 기재할 땐 명칭과 조문 번호를 함께 적어줘. (예: 성폭력범죄의 처벌 등에 관한 특례법 제13조)
+
 
 예시:
 {{
@@ -148,7 +180,7 @@ async def stream_chat(query: Query):
 {context}
 
 ### 질문:
-{query.question}
+{query.question} 
 """
 
     response = client.chat.completions.create(
@@ -156,7 +188,11 @@ async def stream_chat(query: Query):
         messages=[
             {
                 "role": "system",
-                "content": "너는 악성민원 대응 가이드 및 관련 법률 문서를 기반으로 상담하는 전문가 AI다. 반드시 JSON 형식으로만 출력하고, 코드 블록이나 부가 설명은 절대 하지 마."
+                "content": ("너는 악성민원 대응 가이드 및 관련 법률 문서를 기반으로 상담하는 전문가 AI다."
+                            "반드시 JSON 형식으로만 출력하고, 코드 블록이나 부가 설명은 절대 하지 마."
+                            "RAG(참고자료)에서 충분한 정보가 없을 경우에도 일반 지식으로 합리적 추론을 하되, "
+                            "불확실한 부분은 단정하지 말고 '관련될 수 있습니다' 등 완곡 표현을 사용해."
+                )
             },
             {"role": "user", "content": prompt}
         ],
@@ -187,6 +223,9 @@ async def stream_chat(query: Query):
 
         # 병합 규칙: 키워드(1차) → 모델 sourcePages → RAG sourcePages
         final_sources = _merge_sources(source_pages_keywords, model_sources, source_pages_rag)
+        
+        # ✅ 후처리: 비법률/없음 제거 + 최대 3개 제한
+        final_sources = _post_filter_sources(final_sources, limit=3)
 
         payload = {"answer": model_answer, "sourcePages": final_sources}
         yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
