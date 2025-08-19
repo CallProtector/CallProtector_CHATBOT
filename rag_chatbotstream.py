@@ -22,6 +22,33 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index_name = os.getenv("PINECONE_INDEX", "legal-guideline-usw2")
 index = pc.Index(index_name)
 
+SMALLTALK_KWS = [
+    "안녕", "안뇽", "하이", "hi", "hello", "헬로", "헤이", "방가","ㅎㅇ", "그냥",
+    "잘 지내", "뭐해", "심심해","심심","ㅎㅎ", "ㅋㅋ", "굿모닝", "굿밤", "잘자","좋은 아침", "수고", "고마워","땡큐", "감사", "thanks", "thx","ㄳ"
+]
+
+def is_smalltalk(text: str) -> bool:
+    t = (text or "").strip().lower()
+    # 키워드 중 하나라도 들어가면 무조건 smalltalk
+    return any(k in t for k in SMALLTALK_KWS)
+
+def smalltalk_reply(text: str) -> str:
+    t = (text or "").lower()
+    if any(k in t for k in ["안녕", "안뇽", "하이", "hello", "hi", "헬로", "헤이","방가","ㅎㅇ"]):
+        return "안녕하세요! 만나서 반가워요 😊 무엇을 도와드릴까요?"
+    if any(k in t for k in ["굿모닝","좋은 아침"]):
+        return "안녕하세요! 잘 지내셨나요? 😊 무엇을 도와드릴까요?"
+    if any(k in t for k in ["굿밤","잘자"]):
+        return "고마워요! 편안한 밤 되세요 🌛"
+    if any(k in t for k in ["고마워", "감사", "땡큐","thx", "thanks","수고","ㄳ"]):
+        return "별말씀을요! 도움이 되어 기뻐요. 또 궁금한 점 있으면 편하게 물어보세요."
+    if any(k in t for k in ["뭐해","심심해","심심"]):
+        return "여기 있어요! 질문을 기다리는 중이에요. 어떤 도움이 필요하신가요?"
+    if any(k in t for k in ["ㅎㅎ", "ㅋㅋ","그냥"]):
+        return "헤헤 😄 농담도 좋아요. 이제 본론으로—무엇을 도와드릴까요?"
+    # 기본
+    return "안녕하세요! 편하게 말씀해 주세요. 민원/상담 관련도 좋고, 일반적인 질문도 환영해요."
+
 # ✅ 4. 요청 모델 정의
 class Query(BaseModel):
     session_id: int
@@ -249,6 +276,14 @@ def retrieve_context(query: str, top_k: int = 2):
 # ✅ 6. GPT 스트리밍 + JSON 응답 (키워드 기반 법률을 sourcePages 1차 반영)
 @router.post("/stream")
 async def stream_chat(query: Query):
+    # ✅ 0) 일상 대화면 즉시 SSE로 응답하고 종료 (모델/RAG 호출 없이)
+    if is_smalltalk(query.question):
+        async def smalltalk_events():
+            payload = {"answer": smalltalk_reply(query.question), "sourcePages": []}
+            yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
+            yield "data: [END]\n\n"
+        return EventSourceResponse(smalltalk_events())
+    
     # RAG
     context, source_pages_rag = retrieve_context(query.question)
 
