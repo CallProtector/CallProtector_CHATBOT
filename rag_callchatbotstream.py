@@ -366,8 +366,9 @@ async def callchat_stream(body: StreamQuery):
     # (2) 스크립트
     scripts_text = scripts_to_text(body.context_scripts)
 
-    # (3) RAG
-    rag_text, source_pages_rag = retrieve_context(body.question)
+    # (3) RAG 검색: 스크립트 + 질문을 같이 넣음
+    haystack = (scripts_text + "\n" + body.question).strip()
+    rag_text, source_pages_rag = retrieve_context(haystack)
 
     # (4) 본문 보조 설명(선택): 기존 keyword_additional_laws 유지
     add_laws_text = keyword_additional_laws(body.question, scripts_text)
@@ -417,14 +418,14 @@ async def callchat_stream(body: StreamQuery):
                 # 3) RAG 소스는 이미 정규화됨
                 rag_sources = source_pages_rag
 
-                # 4) 우선순위 병합: 키워드 → 모델 → RAG
-                merged = merge_unique(kw_sources, model_sources, rag_sources)
+                # 4) 우선순위 병합: 키워드 → RAG  → 모델 
+                merged = kw_sources + rag_sources + model_sources
 
                 # 5) 최종 후처리(분할/정규화/중복 제거/최대 3개)
                 final_sources = _post_filter_sources(merged, limit=3)
 
                 # 6) answer를 2문단 구조로 보정
-                final_answer = ensure_two_paragraphs(model_answer, final_sources)
+                final_answer = ensure_two_paragraphs(full, final_sources)
 
                 payload = {"answer": final_answer, "sourcePages": final_sources, "sourcePagesText": _format_sourcepages_pairs(final_sources)}
                 yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
