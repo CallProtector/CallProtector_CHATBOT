@@ -22,16 +22,19 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index_name = os.getenv("PINECONE_INDEX", "legal-guideline-usw2")
 index = pc.Index(index_name)
 
+# ✅ 일상적인 대화(smalltalk)로 분류할 키워드
 SMALLTALK_KWS = [
     "안녕", "안뇽", "하이", "hi", "hello", "헬로", "헤이", "방가","ㅎㅇ", "그냥",
     "잘 지내", "뭐해", "심심해","심심","ㅎㅎ", "ㅋㅋ", "굿모닝", "굿밤", "잘자","좋은 아침", "수고", "고마워","땡큐", "감사", "thanks", "thx","ㄳ"
 ]
 
+# 입력 문장이 smalltalk(일상 대화)인지 판별
 def is_smalltalk(text: str) -> bool:
     t = (text or "").strip().lower()
     # 키워드 중 하나라도 들어가면 무조건 smalltalk
     return any(k in t for k in SMALLTALK_KWS)
 
+# smalltalk 유형에 따라 적절한 답변 생성
 def smalltalk_reply(text: str) -> str:
     t = (text or "").lower()
     if any(k in t for k in ["안녕", "안뇽", "하이", "hello", "hi", "헬로", "헤이","방가","ㅎㅇ"]):
@@ -49,12 +52,14 @@ def smalltalk_reply(text: str) -> str:
     # 기본
     return "안녕하세요! 편하게 말씀해 주세요. 민원/상담 관련도 좋고, 일반적인 질문도 환영해요."
 
-# ✅ 4. 요청 모델 정의
+# ✅ 4. 요청 모델 정의  (클라이언트에서 들어오는 데이터 형식)
 class Query(BaseModel):
     session_id: int
     question: str
 
 # ---------- 유틸: 키워드 기반 법률쌍(1차 우선) ----------
+
+# 질문에서 키워드 감지 후 (유형, 관련법률) 쌍 추출 (1차 매핑)
 def keyword_pairs_first(text: str):
     """
     질문(또는 스크립트)에서 키워드를 감지해
@@ -84,6 +89,7 @@ def keyword_pairs_first(text: str):
     # 너무 길어지지 않게 상위 3개만
     return out[:3]
 
+# sourcePages 항목 정리 (빈 값 제거, 공백 제거)
 def _clean_pair(e):
     if not isinstance(e, dict):
         return None
@@ -93,6 +99,7 @@ def _clean_pair(e):
         return None
     return {"유형": t, "관련법률": l}
 
+ # 여러 sourcePages 리스트를 합치고 중복 제거
 def _merge_sources(primary, *others):
     """
     primary → others 순으로 합치며 (유형,관련법률) 중복 제거.
@@ -116,7 +123,7 @@ def _merge_sources(primary, *others):
         push_list(o)
     return merged
 
-# ✅ 법률 한 줄 요약 사전 (필요하면 추가)
+# ✅ 법률 한 줄 요약 사전 (특정 조항 설명)
 _LAW_BRIEFS = {
     "성폭력범죄의 처벌 등에 관한 특례법 제13조": "통신수단을 이용한 음란·성적 수치심 유발 행위를 처벌합니다. 이는 2년 이하 징역 또는 2천만원 이하 벌금형에 해당합니다. ",
     "형법 제283조": "폭행·협박으로 상대방의 의사결정을 제압하는 행위를 처벌합니다. 이는  3년 이하 징역 또는 500만원 이하 벌금형에 해당합니다.",
@@ -131,6 +138,7 @@ _LAW_BRIEFS = {
 }
 
 # 키워드 기반 기본 요약(매핑 없을 때 중복 최소화)
+# 사전에 없는 법률명을 키워드 기반으로 간단 설명 생성
 def _brief_fallback_by_keyword(law: str) -> str:
     if "협박" in law:
         return "상대방에게 공포심을 야기하는 협박 행위를 처벌합니다."
@@ -150,9 +158,12 @@ def _brief_fallback_by_keyword(law: str) -> str:
         return "상담 과정에서 발생하는 욕설·폭언·성희롱 등 악·강성 민원으로부터 상담사를 보호하기 위해 마련된 제도적 지침입니다. 상담 종료 기준, 기록 관리, 보호 조치 절차 등을 규정합니다."
     return "해당 조항은 관련 행위를 규율·제재하여 피해 방지를 도모합니다."
 
+
+# 법률 요약 설명 반환 (사전 매핑 우선, 없으면 fallback)
 def _brief_for_law(law: str) -> str:
     return _LAW_BRIEFS.get(law, _brief_fallback_by_keyword(law))
 
+ # answer의 두 번째 문단을 생성 (유형/법률 나열 + 각 법률 설명)
 def _build_second_paragraph(sources: list[dict]) -> str:
     if not sources:
         head = "당신이 상담한 내용은 ‘해당 유형’을에 해당할 수 있으며, 관련 법률로는 ‘관련 법률’이 있습니다."
@@ -177,6 +188,7 @@ def _build_second_paragraph(sources: list[dict]) -> str:
     tail = "\n".join(lines) if lines else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
     return f"{head}\n{tail}"
 
+# 답변을 항상 2문단 구조로 보정 (첫 문단 보강, 두 번째 문단 재작성)
 def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
     text = (answer or "").strip()
     paras = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -199,7 +211,9 @@ def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
 
     return "\n\n".join(paras)
 
+
 # 관련법률 중복 제거해주는 함수  
+ # 법률명 정규화 (괄호·주석 제거)
 def _normalize_law_name(law: str) -> str:
     """
     법률명 + 조문번호만 남기고 괄호/주석은 제거
@@ -210,6 +224,7 @@ def _normalize_law_name(law: str) -> str:
     return re.sub(r"\s*\(.*?\)", "", law).strip()
 
 # 유형, 법률 중복 항목을 제거 
+# sourcePages 후처리 (중복 제거, 최대 3개 유지)
 def _post_filter_sources(sources, limit=3):
     """
     - 법률명만 기준으로 중복 제거 (유형이 달라도 같은 법률이면 1개만)
@@ -244,6 +259,7 @@ def _post_filter_sources(sources, limit=3):
 
 
 # ✅ 5. 유사 문단 검색 (본문+메타데이터 포함)
+# Pinecone에서 query와 유사 문단 검색 후 context와 sourcePages 반환
 def retrieve_context(query: str, top_k: int = 2):
     embedding = client.embeddings.create(
         input=[query],
