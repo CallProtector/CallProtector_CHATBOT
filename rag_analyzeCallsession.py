@@ -113,6 +113,26 @@ def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
 
     return "\n\n".join(paras)
 
+def _ensure_two_paragraphs_with_priority(answer: str, final_sources: list[dict]) -> str:
+    text = (answer or "").strip()
+    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    if not paras:
+        paras = ["상황 기록, 증거 보존, 상급자 보고, 심리적 안정 확보 등 즉시 조치를 진행하세요."]
+
+    # 첫 문단이 너무 짧으면 보강
+    first_sentences = [s for s in (paras[0].split("。") if "。" in paras[0] else paras[0].split(".")) if s.strip()]
+    if len(first_sentences) < 4:
+        supplement = "사건 직후에는 통화 선종료 기준과 차단 방침을 숙지하고, 재발 방지를 위해 안내 멘트를 활용하세요. 내부 기록 시스템에 시간·상황·발언 내용을 구체적으로 남기고, 필요 시 보호 조치를 즉시 요청하세요."
+        paras[0] = (paras[0] + " " + supplement).strip()
+
+    # ✅ GPT 본문(📜 블록 포함)은 건드리지 않고, 마지막에만 우리 요약을 '부록'으로 추가
+    appendix = "👩⚖️법적으로 이렇게 대응할 수 있어요!\n" + _build_second_paragraph(final_sources)
+    paras.append(appendix)
+
+    return "\n\n".join(paras)
+
+
 def _normalize_law_name(law: str) -> str:
     """
     법률명 + 조문번호만 남기고 괄호/주석은 제거.
@@ -316,8 +336,8 @@ async def analyze_call_session(request: Request):
             source_pages_filtered = _post_filter_sources(source_pages, limit=3)
 
             # ✅ 핵심: GPT가 만든 answer의 '두 번째 문단'을 sourcePages 기준으로 재작성 → 항상 일치!
-            final_answer = _ensure_two_paragraphs(full_response, source_pages_filtered)
-
+            final_answer = _ensure_two_paragraphs_with_priority(full_response, source_pages_filtered)
+            
             payload = {"answer": final_answer, "sourcePages": source_pages_filtered}
             yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
             yield "data: [END]\n\n"
