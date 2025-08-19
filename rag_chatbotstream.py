@@ -279,6 +279,7 @@ def format_sourcepages_for_answer(sources: list[dict]) -> str:
 
     return "\n\n".join(blocks)
 
+
 # ✅ 5. 유사 문단 검색 (본문+메타데이터 포함)
 # Pinecone에서 query와 유사 문단 검색 후 context와 sourcePages 반환
 def retrieve_context(query: str, top_k: int = 2):
