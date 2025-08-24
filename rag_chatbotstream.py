@@ -136,7 +136,8 @@ _LAW_BRIEFS = {
     "형법 제324조": "폭행·협박 등으로 의사에 반해 의무 없는 일을 하게 하는 강요를 처벌합니다. 이는 5년 이하 징역 또는 3천만원 이하 벌금형에 해당합니다.",
     "경범죄처벌법 제3조 제1항 제40호": "정당한 이유 없이 반복적 전화 등으로 남을 괴롭히는 행위를 제재합니다. 이는 10만원 이하 벌금, 구류, 과료형에 해당합니다.",
     "스토킹범죄의 처벌 등에 관한 법률 제18조 제1항": "지속적·반복적 스토킹 범죄를 처벌하고 보호조치를 규정합니다. 이는 3년 이하 징역 또는 3천만원 이하 벌금형에 해당합니다.",
-    "국민권익위원회 상담사 보호 지침": "상담 과정에서 발생하는 욕설·폭언·성희롱 등 악·강성 민원으로부터 상담사를 보호하기 위해 마련된 제도적 지침입니다. 상담 종료 기준, 기록 관리, 보호 조치 절차 등을 규정합니다."
+    "국민권익위원회 상담사 보호 지침": "상담 과정에서 발생하는 욕설·폭언·성희롱 등 악·강성 민원으로부터 상담사를 보호하기 위해 마련된 제도적 지침입니다. 상담 종료 기준, 기록 관리, 보호 조치 절차 등을 규정합니다.",
+    "민원처리법 제23조": "동일·반복 민원에 대한 처리 제한/종결 절차를 규정합니다. 기관 지침에 따라 반복 제기에 대해 종결할 수 있습니다."
 }
 
 # 키워드 기반 기본 요약(매핑 없을 때 중복 최소화)
@@ -416,7 +417,7 @@ async def stream_chat(query: Query):
         final_sources = _post_filter_sources(final_sources, limit=3)
         
         # ✅ answer 2문단/시작문장/요약 강제 보정
-        final_answer = _ensure_two_paragraphs(model_answer, final_sources)
+        final_answer = ensure_two_paragraphs(model_answer, final_sources)
 
         payload = {"answer": final_answer, "sourcePages": final_sources, "sourcePagesText": format_sourcepages_for_answer(final_sources)}
         yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
