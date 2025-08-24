@@ -419,7 +419,7 @@ async def callchat_stream(body: StreamQuery):
                 rag_sources = source_pages_rag
 
                 # 4) 우선순위 병합: 키워드 → RAG  → 모델 
-                merged = kw_sources + rag_sources + model_sources
+                merged = rag_sources + kw_sources +  model_sources
 
                 # 5) 최종 후처리(분할/정규화/중복 제거/최대 3개)
                 final_sources = _post_filter_sources(merged, limit=3)
