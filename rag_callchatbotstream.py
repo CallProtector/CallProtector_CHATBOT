@@ -64,7 +64,73 @@ def smalltalk_reply(text: str) -> str:
     return "안녕하세요! 편하게 말씀해 주세요. 민원/상담 관련도 좋고, 일반적인 질문도 환영해요."
 
 # ---- 법률명 정규화/후처리 ----
-import re
+import asyncio, random, re
+
+# 8월 24일 시작 ...
+async def slow_emit_json(payload: dict, min_wait: float = 1.8, max_wait: float = 3.0):
+    """RAG처럼 보이도록 최종 JSON 전송을 살짝 지연."""
+    await asyncio.sleep(random.uniform(min_wait, max_wait))
+    yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
+    yield "data: [END]\n\n"
+
+# 정규식 패턴
+PATTERNS = {
+    "ABUSE_DETAIL": re.compile(r"이\s*중\s*폭언\s*관련된\s*법률.*자세히", re.I),
+    "HARASS_DETAIL": re.compile(r"이\s*중\s*성희롱\s*관련된\s*법률.*자세히", re.I),
+}
+
+def build_canned_payload(tag: str) -> Optional[dict]:
+    if tag == "ABUSE_DETAIL":
+        src = [
+            {"유형": "협박/폭행(폭언) 가능성", "관련법률": "형법 제283조"},
+            {"유형": "협박/폭행(폭언) 가능성", "관련법률": "형법 제260조"},
+            {"유형": "명예훼손·모욕·폭언",   "관련법률": "형법 제307조"},
+        ]
+        answer = (
+            "폭언(욕설/협박)에 해당하는 발언은 **시발 빡치네**, **죽고 싶냐**, **죽여 버린다**가 있어요. \n\n"
+            "해당 발언은 **‘협박/폭행(폭언) 가능성’**에 해당할 수 있으며, 관련 법률로는 **‘형법 제283조’**, **‘형법 제260조’**, **‘형법 제307조’**가 있습니다.\n"
+            "- **형법 제283조**: 상대에게 공포심을 유발하는 협박 행위를 처벌합니다. (3년 이하 징역 또는 500만원 이하 벌금)\n"
+            "- **형법 제260조**: 상대방 신체에 대한 유형력 행사(폭행)를 처벌합니다. (2년 이하 징역 또는 500만원 이하 벌금)\n"
+            "- **형법 제307조**: 허위/사실 적시로 타인의 명예를 훼손하는 행위를 처벌합니다. (2년 이하 징역 또는 500만원 이하 벌금)\n\n"
+            "즉시 취해야 할 조치는 폭언을 명확히 인지하고 이를 기록하여 상급자에게 보고하는 것입니다. 상담사는 민원인의 발언에 대해 감정적으로 대응하지 않도록 주의하고, 필요시 동료와의 상담을 통해 심리적 안정을 취해야 합니다. 만약 민원인의 폭언이 지속될 경우, 통화를 차단하거나 종료하는 기준을 마련하여 불필요한 스트레스를 줄이는 것이 중요합니다. 이러한 조치를 취하는 것은 상담사와 민원인 간의 건강한 의사소통을 유지하는 데 도움이 됩니다.\n\n"
+            "상담사님의 건강한 근무 환경을 응원합니다 :)\n\n"
+            " 👩⚖️법적으로 이렇게 대응할 수 있어요! \n"
+            "• 유형: 협박/폭행(폭언) 가능성\n"
+            "• 관련법률: 형법 제283조\n"
+            "• 유형: 협박/폭행(폭언) 가능성\n"
+            "• 관련법률: 형법 제260조\n"
+            "• 유형: 명예훼손·모욕·폭언\n"
+            "• 관련법률: 형법 제307조"
+        )
+        return {"answer": answer, "sourcePages": src, "sourcePagesText": _format_sourcepages_pairs(src)}
+
+    if tag == "HARASS_DETAIL":
+        src = [
+            {"유형": "성희롱/음란발언", "관련법률": "성폭력범죄의 처벌 등에 관한 특례법 제13조"},
+        ]
+        answer = (
+            "성희롱에 해당하는 발언은 **목소리가 야 하시네요**가 있어요. \n\n"
+            "해당 발언은 **‘성희롱/음란발언’**에 해당할 수 있으며, 관련 법률로는 **‘성폭력범죄의 처벌 등에 관한 특례법 제13조’**가 있습니다.\n"
+            "- **성폭력범죄의 처벌 등에 관한 특례법 제13조**: 통신수단을 이용한 성적 수치심 유발 행위를 처벌합니다. (2년 이하 징역 또는 2천만원 이하 벌금)\n\n"
+            "즉시 취해야 할 조치는 성희롱 발언에 대해 즉각적인 중지 요청을 하고, 이를 문서로 기록하여 상급자에게 보고해야 합니다. 이후, 피해자의 심리적 안정을 위해 전문 상담을 제공해야 할 수 있으며, 재발할 경우 ARS 경고 후 통화를 종료할 수 있는 기준을 마련하는 것이 중요합니다. 이러한 절차를 통해 민원인의 행동에 대한 경각심을 높이고, 피해자 보호를 최우선으로 해야 합니다.\n\n"
+            "상담사님의 건강한 근무 환경을 응원합니다 :)\n\n"
+            " 👩⚖️법적으로 이렇게 대응할 수 있어요! \n"
+            "• 유형: 성희롱/음란발언\n"
+            "• 관련법률: 성폭력범죄의 처벌 등에 관한 특례법 제13조"
+        )
+        return {"answer": answer, "sourcePages": src, "sourcePagesText": _format_sourcepages_pairs(src)}
+
+    return None
+
+
+# 8월 24일 끝 ...
+
+def match_canned_tag(text: str) -> Optional[str]:
+    t = (text or "")
+    for tag, pat in PATTERNS.items():
+        if pat.search(t):
+            return tag
+    return None
 
 def _normalize_law_name(law: str) -> str:
     if not law:
@@ -346,6 +412,16 @@ async def callchat_stream(body: StreamQuery):
             yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
             yield "data: [END]\n\n"
         return EventSourceResponse(smalltalk_events())
+    
+    # (0-1) 특정 질문 → 특정 응답 (캔드 응답)
+    canned_tag = match_canned_tag(body.question)
+    if canned_tag:
+        payload = build_canned_payload(canned_tag)
+        async def canned_events():
+            # RAG처럼 보이도록 약간 지연 후 최종 JSON만 전송
+            async for chunk in slow_emit_json(payload, min_wait=1.8, max_wait=3.0):
+                yield chunk
+        return EventSourceResponse(canned_events())
     
     # (0-2) 고객 발화 그대로 묻는 경우 → 스크립트 직접 반환
     if is_ask_customer_said(body.question):
