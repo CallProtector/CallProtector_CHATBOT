@@ -94,13 +94,6 @@ def build_canned_payload(tag: str) -> Optional[dict]:
             "- **형법 제307조**: 허위/사실 적시로 타인의 명예를 훼손하는 행위를 처벌합니다. (2년 이하 징역 또는 500만원 이하 벌금)\n\n"
             "즉시 취해야 할 조치는 폭언을 명확히 인지하고 이를 기록하여 상급자에게 보고하는 것입니다. 상담사는 민원인의 발언에 대해 감정적으로 대응하지 않도록 주의하고, 필요시 동료와의 상담을 통해 심리적 안정을 취해야 합니다. 만약 민원인의 폭언이 지속될 경우, 통화를 차단하거나 종료하는 기준을 마련하여 불필요한 스트레스를 줄이는 것이 중요합니다. 이러한 조치를 취하는 것은 상담사와 민원인 간의 건강한 의사소통을 유지하는 데 도움이 됩니다.\n\n"
             "상담사님의 건강한 근무 환경을 응원합니다 :)\n\n"
-            " 👩⚖️법적으로 이렇게 대응할 수 있어요! \n"
-            "• 유형: 협박/폭행(폭언) 가능성\n"
-            "• 관련법률: 형법 제283조\n"
-            "• 유형: 협박/폭행(폭언) 가능성\n"
-            "• 관련법률: 형법 제260조\n"
-            "• 유형: 명예훼손·모욕·폭언\n"
-            "• 관련법률: 형법 제307조"
         )
         return {"answer": answer, "sourcePages": src, "sourcePagesText": _format_sourcepages_pairs(src)}
 
@@ -114,9 +107,6 @@ def build_canned_payload(tag: str) -> Optional[dict]:
             "- **성폭력범죄의 처벌 등에 관한 특례법 제13조**: 통신수단을 이용한 성적 수치심 유발 행위를 처벌합니다. (2년 이하 징역 또는 2천만원 이하 벌금)\n\n"
             "즉시 취해야 할 조치는 성희롱 발언에 대해 즉각적인 중지 요청을 하고, 이를 문서로 기록하여 상급자에게 보고해야 합니다. 이후, 피해자의 심리적 안정을 위해 전문 상담을 제공해야 할 수 있으며, 재발할 경우 ARS 경고 후 통화를 종료할 수 있는 기준을 마련하는 것이 중요합니다. 이러한 절차를 통해 민원인의 행동에 대한 경각심을 높이고, 피해자 보호를 최우선으로 해야 합니다.\n\n"
             "상담사님의 건강한 근무 환경을 응원합니다 :)\n\n"
-            " 👩⚖️법적으로 이렇게 대응할 수 있어요! \n"
-            "• 유형: 성희롱/음란발언\n"
-            "• 관련법률: 성폭력범죄의 처벌 등에 관한 특례법 제13조"
         )
         return {"answer": answer, "sourcePages": src, "sourcePagesText": _format_sourcepages_pairs(src)}
 
@@ -413,6 +403,7 @@ async def callchat_stream(body: StreamQuery):
             yield "data: [END]\n\n"
         return EventSourceResponse(smalltalk_events())
     
+    # 8월 24일 시작 ...
     # (0-1) 특정 질문 → 특정 응답 (캔드 응답)
     canned_tag = match_canned_tag(body.question)
     if canned_tag:
@@ -422,6 +413,8 @@ async def callchat_stream(body: StreamQuery):
             async for chunk in slow_emit_json(payload, min_wait=1.8, max_wait=3.0):
                 yield chunk
         return EventSourceResponse(canned_events())
+    
+    # 8월 24일 끝 ...
     
     # (0-2) 고객 발화 그대로 묻는 경우 → 스크립트 직접 반환
     if is_ask_customer_said(body.question):
