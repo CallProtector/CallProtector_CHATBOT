@@ -417,7 +417,7 @@ async def stream_chat(query: Query):
         final_sources = _post_filter_sources(final_sources, limit=3)
         
         # ✅ answer 2문단/시작문장/요약 강제 보정
-        final_answer = ensure_two_paragraphs(model_answer, final_sources)
+        final_answer = _ensure_two_paragraphs(model_answer, final_sources)
 
         payload = {"answer": final_answer, "sourcePages": final_sources, "sourcePagesText": format_sourcepages_for_answer(final_sources)}
         yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
