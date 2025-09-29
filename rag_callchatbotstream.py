@@ -223,7 +223,7 @@ def _build_second_paragraph(sources: list[dict]) -> str:
         laws.append(l)
 
     head = f"당신이 상담한 내용은 **‘{typ}’**에 해당할 수 있으며, 관련 법률로는 **‘" + "’, ‘".join(laws) + "’**가 있습니다."
-    # ✅ 법률명만 굵게
+    # 법률명만 굵게
     bullets = "\n".join([f"- **{l}**: {_brief_for_law(l)}" for l in laws])
     return head + "\n" + bullets
 
