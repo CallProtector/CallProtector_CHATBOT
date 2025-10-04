@@ -84,6 +84,10 @@ def brief_for_law(law: str) -> str:
   
 # ---- 정규화/후처리/포맷 ------------------------------------------------------
 def normalize_law_name(law: str) -> str:
+    """
+    법률명 + 조문번호만 남기고 괄호/주석은 제거.
+    예: '민원처리법 제23조 (3회 이상 반복 시 종결)' → '민원처리법 제23조'
+    """
     if not law: return ""
     return re.sub(r"\s*\(.*?\)", "", law).strip()
 
@@ -103,6 +107,7 @@ def post_filter_sources(sources: List[Dict], limit:int=3) -> List[Dict]:
         raw = (e.get("관련법률") or "").strip()
         if not (_ok(typ) and _ok(raw)): 
             continue
+        # 여러 개가 한 줄에 들어오는 경우 분할
         parts = [x.strip() for x in re.split(r"[;,]", raw) if x.strip()]
         for lw in parts:
             norm = normalize_law_name(lw)
