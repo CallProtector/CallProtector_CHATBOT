@@ -8,6 +8,16 @@ import asyncio
 from dotenv import load_dotenv
 import re 
 
+# 공통 정책 모듈
+from reply_policy import (
+    keyword_pairs_first,
+    parse_model_json,
+    merge_sources,
+    ensure_two_paragraphs,
+    format_sourcepages_text,
+)
+
+
 # ✅ 환경 변수 로드
 load_dotenv()
 
