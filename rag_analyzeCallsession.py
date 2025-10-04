@@ -32,7 +32,6 @@ index = pc.Index(index_name)
 
 
 
-
 # ✅ 벡터 검색 함수 정의
 def retrieve_context(query: str, top_k: int = 5):
     embedding = client.embeddings.create(
