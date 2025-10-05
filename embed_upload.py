@@ -36,7 +36,7 @@ with open("documents.json", "r", encoding="utf-8") as f:
     documents = json.load(f)
 print(f"📂 총 {len(documents)}개의 문서를 업로드합니다...")
 
-# ✅ 초기화 로직: 새로 만든 인덱스면 스킵, 기존이면 존재하는 네임스페이스만 삭제
+# ★  초기화 로직: 새로 만든 인덱스면 스킵, 기존이면 존재하는 네임스페이스만 삭제
 if not created_now:
     try:
         stats = index.describe_index_stats()

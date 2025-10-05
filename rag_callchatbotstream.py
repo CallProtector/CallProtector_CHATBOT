@@ -269,7 +269,7 @@ def sanitize_answer_by_allowed(answer: str, final_sources: List[dict], allowed_t
     return "\n".join(out).strip()
 
 
-# ✅ RAG 검색 (원문 그대로 회수) + 허용유형 필터
+# RAG 검색 (원문 그대로 회수) + 허용유형 필터
 def retrieve_context(query: str, top_k: int = 5, allowed_types: Optional[set[str]] = None) -> Tuple[str, List[dict]]:
     emb = client.embeddings.create(input=[query], model="text-embedding-3-small").data[0].embedding
     results = index.query(vector=emb, top_k=top_k, include_metadata=True, include_values=False)
