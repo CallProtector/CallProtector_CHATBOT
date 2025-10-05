@@ -18,16 +18,16 @@ from reply_policy import (
     format_sourcepages_text,  # 화면용 sourcePagesText
 )
 
-# ✅ 환경 변수 로드
+# 환경 변수 로드
 load_dotenv()
 
 router = APIRouter()
 
-# ✅ 환경변수 기반 모델명 (하드코딩 방지)
+# 환경변수 기반 모델명 (하드코딩 방지)
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
-# ✅ OpenAI & Pinecone 초기화
+# OpenAI & Pinecone 초기화
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 # 오레곤(us-west-2) 인덱스 사용
@@ -126,7 +126,7 @@ def detect_abuse_types(text: str) -> set[str]:
         flags.add("폭언")  # ← '모욕' 대신 '폭언'으로 표기
     return flags
 
-# ---------- 🧠 분석 엔드포인트 ----------
+# ---------- 분석 엔드포인트 ----------
 @router.post("/analyze")
 async def analyze_call_session(request: Request):
     body = await request.json()
@@ -139,10 +139,10 @@ async def analyze_call_session(request: Request):
             yield "data: [END]\n\n"
         return EventSourceResponse(err_stream(), status_code=400, headers={"X-Accel-Buffering": "no"})
 
-    # ✅ 통화 내용 추출
+    # 통화 내용 추출
     context_dialogue = "\n".join(f"{s['speaker']}: {s['text']}" for s in scripts)
 
-    # ✅ RAG 질의
+    # RAG 질의
     question = (
         "다음 상담 내용에서 고객의 발언 중 위법 소지가 있는 부분이 있다면 "
         "어떤 법률 조항(법률명 + 조문번호 포함)이 적용될 수 있으며, "
@@ -150,13 +150,13 @@ async def analyze_call_session(request: Request):
         f"{context_dialogue}"
     )
 
-    # ✅ RAG 검색
+    # RAG 검색
     rag_context, source_pages_rag = retrieve_context(context_dialogue)
 
-    # ✅ 의미 기반 유형 탐지 (신규)
+    # 의미 기반 유형 탐지 (신규)
     detected = detect_abuse_types(context_dialogue)
 
-    # ✅ 추가 법률 정보 (탐지 결과 기반)
+    # 추가 법률 정보 (탐지 결과 기반)
     additional_laws = ""
     if "성희롱" in detected:
         additional_laws += (
@@ -178,7 +178,7 @@ async def analyze_call_session(request: Request):
     if additional_laws:
         rag_context += "\n---\n" + additional_laws
 
-    # ✅ 프롬프트 (자유서술형 — '모욕' 용어 대신 '폭언' 중심 표기)
+    # 프롬프트 (자유서술형 — '모욕' 용어 대신 '폭언' 중심 표기)
     #    예시 블록은 입력에 따라 동적으로 편향을 줄여도 되지만,
     #    여기서는 간결성을 위해 고정 예시 + 폭언 표기로 유지
     prompt = f"""
@@ -224,7 +224,7 @@ async def analyze_call_session(request: Request):
 {rag_context}
 """
 
-    # ✅ GPT 스트리밍 응답
+    # GPT 스트리밍 응답
     async def event_generator():
         full_response = ""
         try:

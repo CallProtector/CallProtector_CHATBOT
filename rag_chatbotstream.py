@@ -8,13 +8,13 @@ from openai import OpenAI
 from pinecone import Pinecone
 import re
 
-# ✅ 1. 환경 변수 로드
+# 1. 환경 변수 로드
 load_dotenv()
 
-# ✅ 2. 라우터 초기화
+# 2. 라우터 초기화
 router = APIRouter()
 
-# ✅ 3. OpenAI & Pinecone 초기화
+# 3. OpenAI & Pinecone 초기화
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
@@ -22,7 +22,7 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index_name = os.getenv("PINECONE_INDEX", "legal-guideline-usw2")
 index = pc.Index(index_name)
 
-# ✅ 일상적인 대화(smalltalk)로 분류할 키워드
+# 일상적인 대화(smalltalk)로 분류할 키워드
 SMALLTALK_KWS = [
     "안녕", "안뇽", "하이", "hi", "hello", "헬로", "헤이", "방가","ㅎㅇ", "그냥",
     "잘 지내", "뭐해", "심심해","심심","ㅎㅎ", "ㅋㅋ", "굿모닝", "굿밤", "잘자","좋은 아침", "수고", "고마워","땡큐", "감사", "thanks", "thx","ㄳ", "테스트"
@@ -53,7 +53,7 @@ def smalltalk_reply(text: str) -> str:
     # 기본
     return "안녕하세요! 편하게 말씀해 주세요. 민원/상담 관련도 좋고, 일반적인 질문도 환영해요."
 
-# ✅ 4. 요청 모델 정의  (클라이언트에서 들어오는 데이터 형식)
+# 4. 요청 모델 정의  (클라이언트에서 들어오는 데이터 형식)
 class Query(BaseModel):
     session_id: int
     question: str
@@ -127,7 +127,7 @@ def _merge_sources(primary, *others):
         push_list(o)
     return merged
 
-# ✅ 법률 한 줄 요약 사전 (특정 조항 설명)
+# 법률 한 줄 요약 사전 (특정 조항 설명)
 _LAW_BRIEFS = {
     "성폭력범죄의 처벌 등에 관한 특례법 제13조": "통신수단을 이용한 음란·성적 수치심 유발 행위를 처벌합니다. 이는 2년 이하 징역 또는 2천만원 이하 벌금형에 해당합니다. ",
     "형법 제283조": "폭행·협박으로 상대방의 의사결정을 제압하는 행위를 처벌합니다. 이는  3년 이하 징역 또는 500만원 이하 벌금형에 해당합니다.",
@@ -189,7 +189,7 @@ def _build_second_paragraph(sources: list[dict]) -> str:
     # 머리 문장: 유형/법률 목록만 굵게
     head = f"당신이 상담한 내용은 **‘{typ}’**에 해당할 수 있으며, 관련 법률로는 **‘{laws_str}’**가 있습니다."
 
-    # ✅ 각 항목: **법률명**만 굵게 + 한 줄 설명, 항목 사이 ‘한 줄’ 간격
+    # 각 항목: **법률명**만 굵게 + 한 줄 설명, 항목 사이 ‘한 줄’ 간격
     lines = [f"- **{law}**: {_brief_for_law(law)}" for law in unique_laws]
     tail = "\n".join(lines) if lines else "상세 적용은 사안의 맥락에 따라 달라질 수 있습니다."
 
@@ -209,7 +209,7 @@ def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
     if len(paras) == 1:
         paras.append(second)
     else:
-        # ✅ 무조건 dedup 로직을 거친 결과로 교체
+        # 무조건 dedup 로직을 거친 결과로 교체
         paras[1] = second
 
     first_sentences = [s for s in paras[0].split("。") if s.strip()] if "。" in paras[0] else [s for s in paras[0].split(".") if s.strip()]
@@ -221,7 +221,7 @@ def _ensure_two_paragraphs(answer: str, final_sources: list[dict]) -> str:
 
 
 # 관련법률 중복 제거해주는 함수  
- # 법률명 정규화 (괄호·주석 제거)
+# 법률명 정규화 (괄호·주석 제거)
 def _normalize_law_name(law: str) -> str:
     """
     법률명 + 조문번호만 남기고 괄호/주석은 제거
@@ -255,7 +255,7 @@ def _post_filter_sources(sources, limit=3):
             key = norm.lower()
             if not norm:
                 continue
-            # ✅ 법률 기준으로 dedup (유형은 달라도 같은 법률이면 skip)
+            # 법률 기준으로 dedup (유형은 달라도 같은 법률이면 skip)
             if key in seen_laws:
                 continue
             seen_laws.add(key)
@@ -283,7 +283,7 @@ def format_sourcepages_for_answer(sources: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-# ✅ 5. 유사 문단 검색 (본문+메타데이터 포함)
+# 5. 유사 문단 검색 (본문+메타데이터 포함)
 # Pinecone에서 query와 유사 문단 검색 후 context와 sourcePages 반환
 def retrieve_context(query: str, top_k: int = 2):
     embedding = client.embeddings.create(
@@ -306,18 +306,18 @@ def retrieve_context(query: str, top_k: int = 2):
             f"⚖ **관련 법률**: {law}\n"
             f"📝 요약: {meta.get('요약', '')}\n"
         )
-        # ✅ 최종 JSON에서는 '관련법률'(띄어쓰기 없음)
-        # ✅ '없음'은 제외해 sourcePages 정합성 보장
+        # 최종 JSON에서는 '관련법률'(띄어쓰기 없음)
+        # '없음'은 제외해 sourcePages 정합성 보장
         if law and law != "없음":
-            law_norm = _normalize_law_name(law)  # ✅ 추가: 괄호·주석 제거
+            law_norm = _normalize_law_name(law)  # 추가: 괄호·주석 제거
             source_pages.append({"유형": typ, "관련법률": law_norm})
 
     return "\n---\n".join(context_blocks), source_pages
 
-# ✅ 6. GPT 스트리밍 + JSON 응답 (키워드 기반 법률을 sourcePages 1차 반영)
+# 6. GPT 스트리밍 + JSON 응답 (키워드 기반 법률을 sourcePages 1차 반영)
 @router.post("/stream")
 async def stream_chat(query: Query):
-    # ✅ 0) 일상 대화면 즉시 SSE로 응답하고 종료 (모델/RAG 호출 없이)
+    # 0) 일상 대화면 즉시 SSE로 응답하고 종료 (모델/RAG 호출 없이)
     if is_smalltalk(query.question):
         async def smalltalk_events():
             payload = {"answer": smalltalk_reply(query.question), "sourcePages": []}
@@ -403,7 +403,7 @@ async def stream_chat(query: Query):
                 sp = parsed.get("sourcePages")
                 if isinstance(sp, list):
                     model_sources = [_clean_pair(e) for e in sp if _clean_pair(e)]
-                    # ✅ 추가: 관련법률 정규화
+                    # 추가: 관련법률 정규화
                     model_sources = [
                         {"유형": ms["유형"], "관련법률": _normalize_law_name(ms["관련법률"])}
                         for ms in model_sources
@@ -415,10 +415,10 @@ async def stream_chat(query: Query):
         # 병합 규칙: 키워드(1차) → 모델 sourcePages → RAG sourcePages
         final_sources = _merge_sources(source_pages_keywords, model_sources, source_pages_rag)
         
-        # ✅ 후처리: 비법률/없음 제거 + 최대 3개 제한
+        # 후처리: 비법률/없음 제거 + 최대 3개 제한
         final_sources = _post_filter_sources(final_sources, limit=3)
         
-        # ✅ answer 2문단/시작문장/요약 강제 보정
+        # answer 2문단/시작문장/요약 강제 보정
         final_answer = _ensure_two_paragraphs(model_answer, final_sources)
 
         payload = {"answer": final_answer, "sourcePages": final_sources, "sourcePagesText": format_sourcepages_for_answer(final_sources)}
