@@ -46,15 +46,45 @@ def ns_key(session_id: int) -> str:
 
 # ----- canned 응답 (옵션) -----
 async def slow_emit_json(payload: dict, min_wait: float = 1.8, max_wait: float = 3.0):
-    """RAG처럼 보이도록 최종 JSON 전송을 살짝 지연."""
     await asyncio.sleep(random.uniform(min_wait, max_wait))
     yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
     yield "data: [END]\n\n"
 
+# 교체 (키워드 2개만 있어도 매칭: "폭언"+"자세히" / "성희롱"+"자세히")
 PATTERNS = {
-    "ABUSE_DETAIL": re.compile(r"이\s*중\s*폭언\s*관련된\s*법률.*자세히", re.I),
-    "HARASS_DETAIL": re.compile(r"이\s*중\s*성희롱\s*관련된\s*법률.*자세히", re.I),
+    "ABUSE_DETAIL": re.compile(r"(폭언|욕설|협박).*(자세히)|자세히.*(폭언|욕설|협박)", re.I),
+    "HARASS_DETAIL": re.compile(r"(성희롱|음란).*(자세히)|자세히.*(성희롱|음란)", re.I),
 }
+
+ABUSE_INSULT_RE = [
+    r"\b시발\b", r"\b씨발\b", r"개새끼", r"병신", r"등신", r"미친", r"\b꺼져\b", r"개?같은", r"미친", r"개같이", r"이딴", r"학력", r"고졸", r"니네",
+]
+ABUSE_THREAT_RE = [
+    r"죽(여|인다|여버린다)", r"죽고\s*싶냐", r"가만(두지|안[둘둔다])", r"패버린다", r"찾아가(서)? (가만두지|혼?내|죽이)", r"칼들고",
+]
+SEXUAL_RE = [
+    r"야하(시|게)?", r"목소리.*야하",r"목소리", r"섹시", r"밤에.*피는", r"(음란|음탕|음흉)", r"섹스", r"가슴", r"엉덩이",
+]
+
+def extract_matches_from_scripts(
+    scripts: Optional[List[Dict[str, str]]],
+    patterns: List[str],
+    speaker: str = "INBOUND",
+    max_examples: int = 5
+) -> List[str]:
+    """스크립트에서 정규식 패턴에 매칭되는 문장을 최대 max_examples개 추출"""
+    out: List[str] = []
+    for s in (scripts or []):
+        if speaker and s.get("speaker") != speaker:
+            continue
+        text = (s.get("text") or "").strip()
+        for pat in patterns:
+            if re.search(pat, text, flags=re.IGNORECASE):
+                out.append(text)
+                break
+        if len(out) >= max_examples:
+            break
+    return out
 
 def match_canned_tag(text: str) -> Optional[str]:
     t = (text or "")
@@ -63,35 +93,80 @@ def match_canned_tag(text: str) -> Optional[str]:
             return tag
     return None
 
-def build_canned_payload(tag: str) -> Optional[dict]:
+def build_canned_payload(tag: str, scripts: Optional[List[Dict[str, str]]] = None) -> Optional[dict]:
     if tag == "ABUSE_DETAIL":
+        matched = extract_matches_from_scripts(scripts, ABUSE_INSULT_RE + ABUSE_THREAT_RE)
+        has_match = bool(matched)
+        bullets_inline = ", ".join(f"\"**{m}**\"" for m in matched) if has_match else None
+        bullets_list   = "\n".join(f'- "**{m}**"' for m in matched) if has_match else None
+
         src = [
-            {"유형": "협박/폭행(폭언) 가능성", "관련법률": "형법 제283조"},
-            {"유형": "협박/폭행(폭언) 가능성", "관련법률": "형법 제260조"},
-            {"유형": "명예훼손·모욕·폭언",   "관련법률": "형법 제307조"},
+            {"유형": "협박/폭언", "관련법률": "형법 제283조"},
+            {"유형": "업무방해", "관련법률": "형법 제314조"},
+            {"유형": "명예훼손·모욕·폭언", "관련법률": "형법 제311조"},
+            {"유형": "명예훼손·폭언", "관련법률": "형법 제307조"}, 
         ]
-        answer = (
-            "폭언(욕설/협박)에 해당하는 발언은 **\"시발 빡치네\"**, **\"죽고 싶냐\"**, **\"죽여 버린다\"**가 있어요. \n\n"
-            "해당 발언은 **‘협박/폭행(폭언) 가능성’**에 해당할 수 있으며, 관련 법률로는 **‘형법 제283조’**, **‘형법 제260조’**, **‘형법 제307조’**가 있습니다.\n"
-            "- **형법 제283조**: 상대에게 공포심을 유발하는 협박 행위를 처벌합니다. (3년 이하 징역 또는 500만원 이하 벌금)\n"
-            "- **형법 제260조**: 상대방 신체에 대한 유형력 행사(폭행)를 처벌합니다. (2년 이하 징역 또는 500만원 이하 벌금)\n"
-            "- **형법 제307조**: 허위/사실 적시로 타인의 명예를 훼손하는 행위를 처벌합니다. (2년 이하 징역 또는 500만원 이하 벌금)\n\n"
-            "즉시 취해야 할 조치는 폭언을 명확히 인지하고 이를 기록하여 상급자에게 보고하는 것입니다. 상담사는 감정적으로 대응하지 않도록 주의하고, 필요 시 동료 상담을 통해 심리적 안정을 취하세요. 반복 시 차단/선종료 기준에 따라 조치하세요.\n\n"
-            "상담사님의 건강한 근무 환경을 응원합니다 :)\n\n"
+
+        # 1) 매칭된 문장 소개 단락: 있을 때만
+        first_part = f"폭언(욕설/협박)에 해당하는 발언은 {bullets_inline}가 있어요.\n\n" if has_match else ""
+
+        # 2) 법률 소개 문장: 매칭 있으면 “해당 발언은 …에 해당할 수 있으며”, 없으면 중립 표현
+        intro_line = (
+            "해당 발언은 **‘협박/폭언’**에 해당할 수 있으며, 관련 법률로는 "
+            if has_match else
+            "요청하신 유형(협박/폭언)에 대한 **관련 법률 안내**입니다: "
         )
+
+        laws_block = (
+            "**‘형법 제283조’**, **‘형법 제314조(업무방해)’**, **‘형법 제311조(공연성 충족 시)’** 등이 있습니다.\n"
+            "- **형법 제283조**: 상대에게 공포심을 유발하는 협박 행위를 처벌합니다. (3년 이하 징역 또는 500만원 이하 벌금)\n"
+            "- **형법 제314조**: 위력·고성·욕설 등으로 정상적인 업무를 방해한 경우 처벌합니다. (5년 이하 징역 또는 1천5백만원 이하 벌금)\n"
+            "- **형법 제311조**: 공연성이 있는 모욕행위를 처벌합니다. (1년 이하 징역 또는 200만원 이하 벌금)\n"
+        )
+
+        answer = (
+            f"{first_part}"
+            f"{intro_line}{laws_block}\n"
+            "즉시 취해야 할 조치는 폭언을 명확히 인지하고 이를 기록하여 상급자에게 보고하는 것입니다. "
+            "상담원은 민원인의 발언에 대해 감정적으로 대응하지 않도록 주의하고, 필요 시 동료와의 상담을 통해 심리적 안정을 취해야 합니다. "
+            "만약 민원인의 폭언이 지속될 경우, 응대중 차단·선종료 기준을 적용하고 상담원 보호 관점에서 스트레스를 줄이는 것이 중요합니다. "
+            "이러한 조치를 취하는 것은 상담원과 민원인 간의 건강한 의사소통을 유지하는 데도 도움이 됩니다.\n\n"
+            "상담원님의 건강한 근무 환경을 응원합니다 :)\n"
+        )
+
         return {"answer": answer, "sourcePages": src, "sourcePagesText": format_sourcepages_text(src)}
 
     if tag == "HARASS_DETAIL":
-        src = [
-            {"유형": "성희롱/음란발언", "관련법률": "성폭력범죄의 처벌 등에 관한 특례법 제13조"},
-        ]
-        answer = (
-            "성희롱에 해당하는 발언은 **\"목소리가 야 하시네요\"**가 있어요. \n\n"
-            "해당 발언은 **‘성희롱/음란발언’**에 해당할 수 있으며, 관련 법률로는 **‘성폭력범죄의 처벌 등에 관한 특례법 제13조’**가 있습니다.\n"
-            "- **성폭력범죄의 처벌 등에 관한 특례법 제13조**: 통신수단을 이용한 성적 수치심 유발 행위를 처벌합니다. (2년 이하 징역 또는 2천만원 이하 벌금)\n\n"
-            "즉시 취해야 할 조치는 중지 요청 및 기록, 상급자 보고이며, 재발 시 ARS 경고 후 통화 종료 기준을 적용하세요. 피해자의 심리 안정 지원도 병행하세요.\n\n"
-            "상담사님의 건강한 근무 환경을 응원합니다 :)\n\n"
+        matched = extract_matches_from_scripts(scripts, SEXUAL_RE)
+        has_match = bool(matched)
+        bullets_inline = ", ".join(f"\"**{m}**\"" for m in matched) if has_match else None
+        bullets_list   = "\n".join(f'- "**{m}**"' for m in matched) if has_match else None
+
+        src = [{"유형": "성희롱/음란발언", "관련법률": "성폭력범죄의 처벌 등에 관한 특례법 제13조"}]
+
+        first_part = f"성희롱(음란발언)에 해당하는 발언은 {bullets_inline}가 있어요.\n\n" if has_match else ""
+
+        intro_line = (
+            "해당 발언은 **‘성희롱/음란발언’**에 해당할 수 있으며, 관련 법률로는 "
+            if has_match else
+            "요청하신 유형(성희롱/음란발언)에 대한 **관련 법률 안내**입니다: "
         )
+
+        laws_block = (
+            "**‘성폭력범죄의 처벌 등에 관한 특례법 제13조’**가 있습니다.\n"
+            "- **성폭력범죄의 처벌 등에 관한 특례법 제13조**: 통신수단을 이용한 성적 수치심 유발 행위를 처벌합니다. (2년 이하 징역 또는 2천만원 이하 벌금)\n"
+        )
+
+        answer = (
+            f"{first_part}"
+            f"{intro_line}{laws_block}\n"
+            "즉시 취해야 할 조치는 성희롱 발언에 대해 즉각적인 중지 요청을 하고, "
+            "이를 문서로 기록하여 상급자에게 보고해야 합니다. 이후, 피해자의 심리적 안정을 위해 전문 상담을 제공해야 할 수 있으며, "
+            "재발할 경우 ARS 경고 후 통화를 종료할 수 있는 기준을 마련하는 것이 중요합니다. "
+            "이러한 절차를 통해 민원인의 행동에 대한 경각심을 높이고, 피해자 보호를 최우선으로 해야 합니다.\n\n"
+            "상담원님의 건강한 근무 환경을 응원합니다 :)\n"
+        )
+
         return {"answer": answer, "sourcePages": src, "sourcePagesText": format_sourcepages_text(src)}
 
     return None
@@ -326,7 +401,7 @@ async def callchat_stream(body: StreamQuery):
     # (0-1) 특정 질문 → 특정 응답 (캔드 응답)
     canned_tag = match_canned_tag(body.question)
     if canned_tag:
-        payload = build_canned_payload(canned_tag)
+        payload = build_canned_payload(canned_tag, body.context_scripts)
         async def canned_events():
             async for chunk in slow_emit_json(payload, min_wait=1.8, max_wait=3.0):
                 yield chunk
