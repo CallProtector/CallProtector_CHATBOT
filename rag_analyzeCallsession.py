@@ -1,3 +1,4 @@
+# rag_analyzeCallsession.py
 from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 from openai import OpenAI
@@ -6,22 +7,25 @@ import os
 import json
 import asyncio
 from dotenv import load_dotenv
-import re 
+import re
 
-# 공통 정책 모듈
+# 공통 정책 모듈 (reply_policy.py)
 from reply_policy import (
     keyword_pairs_first,
     parse_model_json,
-    merge_sources,
-    ensure_two_paragraphs,
-    format_sourcepages_text,
+    merge_sources,            # (키워드 → RAG → 모델) 병합 + post_filter_sources 포함
+    ensure_two_paragraphs,    # 2문단 보정
+    format_sourcepages_text,  # 화면용 sourcePagesText
 )
-
 
 # ✅ 환경 변수 로드
 load_dotenv()
 
 router = APIRouter()
+
+# ✅ 환경변수 기반 모델명 (하드코딩 방지)
+CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 
 # ✅ OpenAI & Pinecone 초기화
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -30,103 +34,174 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index_name = os.getenv("PINECONE_INDEX", "legal-guideline-usw2")
 index = pc.Index(index_name)
 
-
-
-# ✅ 벡터 검색 함수 정의
+# =========================================
+# RAG: 컨텍스트 + sourcePages(원자료) 수집
+# =========================================
 def retrieve_context(query: str, top_k: int = 5):
-    embedding = client.embeddings.create(
+    emb = client.embeddings.create(
         input=[query],
-        model="text-embedding-3-small"  # ✅ 더 빠르고 저렴
+        model=EMBED_MODEL
     ).data[0].embedding
 
-    results = index.query(vector=embedding, top_k=top_k, include_metadata=True)
+    # include_values=False → payload 감소/속도 향상
+    results = index.query(vector=emb, top_k=top_k, include_metadata=True, include_values=False)
 
     context_blocks = []
     source_pages = []
-    for match in results["matches"]:
-        meta = match["metadata"]
+
+    matches = results.get("matches", []) if isinstance(results, dict) else getattr(results, "matches", []) or []
+    for m in matches:
+        meta = m.get("metadata", {}) if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
+
+        typ = (meta.get("유형") or "없음").strip()
+        # ↙️ 메타키가 '관련 법률' 또는 '관련법률' 어느 쪽이든 커버
+        law_raw = (meta.get("관련 법률") or meta.get("관련법률") or "없음").strip()
+
         context_blocks.append(
-            f"\U0001f4cc 유형: {meta.get('유형', '없음')}\n"
-            f"\U0001f4d6 본문: {meta.get('본문', '')}\n"
-            f"⚖ 관련 법률: {meta.get('관련 법률', '없음')}\n"
-            f"\U0001f4dd 요약: {meta.get('요약', '')}\n"
+            f"📌 유형: {typ or '없음'}\n"
+            f"📖 본문: {meta.get('본문','')}\n"
+            f"⚖ 관련 법률: {law_raw or '없음'}\n"
+            f"📝 요약: {meta.get('요약','')}\n"
         )
-        source_pages.append({
-            "유형": meta.get("유형", "없음"),
-            "관련법률": meta.get("관련 법률", "없음")
-        })
+
+        if law_raw and law_raw != "없음":
+            # ⛳ 원문 그대로 적재(정규화/분할/중복제거는 merge_sources(post_filter_sources)에서 공통 처리)
+            source_pages.append({"유형": typ, "관련법률": law_raw})
 
     return "\n---\n".join(context_blocks), source_pages
 
+# =========================================
+# 자유서술 답변에서 법률명 패턴 보완 추출
+#  - 괄호 안 조문명까지 허용 (예: 형법 제311조(모욕))
+# =========================================
+LAW_REGEX = re.compile(
+    r"(?:[가-힣A-Za-z·\s]{1,25}?법(?:률)?\s*제\s*\d+\s*조(?:\s*제\s*\d+\s*항)?(?:\s*\([^)]+\))?)"
+)
 
+def extract_law_mentions(text: str, limit: int = 5) -> list[str]:
+    """모델의 자유서술 답변에서 '○○법 제n조(제m항)' 패턴을 추출."""
+    if not text:
+        return []
+    hits = LAW_REGEX.findall(text)
+    out, seen = [], set()
+    for raw in hits:
+        lw = re.sub(r"\s+", " ", raw).strip()
+        key = lw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(lw)
+        if len(out) >= limit:
+            break
+    return out
+
+# =========================================
+# 의미 기반 악성 발언 유형 탐지 (정규식/사전)
+#  - '모욕' 용어 대신 UI/응답 문구는 '폭언'으로 표기
+# =========================================
+THREAT_PATTERNS = [
+    r"죽(여|인다|여버리|여버린다)", r"가만(두지|안[둘둔다])", r"찾아가(서)? (가만두지|혼내|죽이)",
+    r"찌[른를]다", r"폭탄", r"테러", r"협박(한다)?"
+]
+SEXUAL_PATTERNS = [
+    r"야하", r"야하게", r"목소리.*야하", r"섹시", r"외모.*(평가|품평)", r"밤에.*(피는|만나)",
+    r"(음란|음탕|음흉)", r"(신음|야동|가슴|엉덩이|음부|유두)"
+]
+INSULT_PATTERNS = [  # 서비스 정책에 맞게 확장/조정
+    r"시발", r"씨발", r"개새끼", r"미친", r"병신", r"등신", r"x발", r"꺼져", r"애미|애비"
+]
+
+def detect_abuse_types(text: str) -> set[str]:
+    """
+    의미 기반 탐지 결과를 {'협박','성희롱','폭언'} 셋으로 반환.
+    - 법률 매핑 시 '폭언'은 주로 형법 제314조(업무방해) 및 제307조(명예훼손) 논의와 연결.
+    """
+    t = text.lower()
+    flags = set()
+    if any(re.search(p, t) for p in THREAT_PATTERNS):
+        flags.add("협박")
+    if any(re.search(p, t) for p in SEXUAL_PATTERNS):
+        flags.add("성희롱")
+    if any(re.search(p, t) for p in INSULT_PATTERNS):
+        flags.add("폭언")  # ← '모욕' 대신 '폭언'으로 표기
+    return flags
 
 # ---------- 🧠 분석 엔드포인트 ----------
-
 @router.post("/analyze")
 async def analyze_call_session(request: Request):
     body = await request.json()
-    session_id = body.get("sessionId")
-    user_id = body.get("userId")
     scripts = body.get("scripts", [])
 
     if not scripts:
-        return EventSourceResponse(content=("data: 세션에 스크립트 없음\n\n",), status_code=400)
+        # 간단 에러 SSE
+        async def err_stream():
+            yield "data: 세션에 스크립트 없음\n\n"
+            yield "data: [END]\n\n"
+        return EventSourceResponse(err_stream(), status_code=400, headers={"X-Accel-Buffering": "no"})
 
     # ✅ 통화 내용 추출
     context_dialogue = "\n".join(f"{s['speaker']}: {s['text']}" for s in scripts)
 
     # ✅ RAG 질의
     question = (
-        "다음 상담 내용에서 고객이 성희롱, 폭언, 협박 등의 발언을 했다면 "
+        "다음 상담 내용에서 고객의 발언 중 위법 소지가 있는 부분이 있다면 "
         "어떤 법률 조항(법률명 + 조문번호 포함)이 적용될 수 있으며, "
         "어떻게 대응해야 하는지 알려줘.\n\n"
         f"{context_dialogue}"
     )
 
     # ✅ RAG 검색
-    rag_context, source_pages_rag = retrieve_context(question)
+    rag_context, source_pages_rag = retrieve_context(context_dialogue)
 
-    # ✅ 추가 법률 정보 (UI 참고용)
+    # ✅ 의미 기반 유형 탐지 (신규)
+    detected = detect_abuse_types(context_dialogue)
+
+    # ✅ 추가 법률 정보 (탐지 결과 기반)
     additional_laws = ""
-    if "성희롱" in question:
-        additional_laws += "\n📚 성희롱 관련 법률:\n- 성폭력범죄의 처벌 등에 관한 특례법 제13조: 2년 이하 징역 또는 2천만원 이하 벌금"
-    if any(k in question for k in ["욕설", "협박", "폭언"]):
-        additional_laws += "\n📚 욕설·협박·폭언 관련 법률:\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금\n- 형법 제260조(폭행): 2년 이하 징역 또는 500만원 이하 벌금"
-    if any(k in question for k in ["모욕", "명예훼손", "폭언"]):
-        additional_laws += "\n📚 명예훼손·모욕·폭언 관련 법률:\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
-    if "업무방해" in question:
-        additional_laws += "\n📚 업무방해 관련 법률:\n- 형법 제314조(업무방해): 5년 이하 징역 또는 1천5백만원 이하 벌금"
-    if "강요" in question:
-        additional_laws += "\n📚 강요 관련 법률:\n- 형법 제324조(강요): 5년 이하 징역 또는 3천만원 이하 벌금"
-    if any(k in question for k in ["장난전화", "괴롭힘", "반복적인 민원"]):
-        additional_laws += "\n📚 장난전화/경범(강성 민원) 관련 법률:\n- 경범죄처벌법 제3조 제1항 제40호: 10만원 이하 벌금, 구류, 과료"
-    if "스토킹" in question:
-        additional_laws += "\n📚 스토킹 관련 법률:\n- 스토킹범죄의 처벌 등에 관한 법률 제18조 제1항: 3년 이하 징역 또는 3천만원 이하 벌금"
+    if "성희롱" in detected:
+        additional_laws += (
+            "\n📚 성희롱 관련 법률:"
+            "\n- 성폭력범죄의 처벌 등에 관한 특례법 제13조(통신매체를 이용한 음란행위): 2년 이하 징역 또는 2천만원 이하 벌금"
+        )
+    if "협박" in detected:
+        additional_laws += (
+            "\n📚 협박 관련 법률:"
+            "\n- 형법 제283조(협박): 3년 이하 징역 또는 500만원 이하 벌금"
+        )
+    if "폭언" in detected:
+        additional_laws += (
+            "\n📚 폭언 관련 법률:"
+            "\n- 형법 제311조(모욕): 1년 이하 징역 또는 200만원 이하 벌금"
+            "\n- 형법 제307조(명예훼손): 2년 이하 징역 또는 500만원 이하 벌금"
+        )
 
     if additional_laws:
         rag_context += "\n---\n" + additional_laws
 
-    # ✅ 프롬프트 (원본 그대로 유지)
+    # ✅ 프롬프트 (자유서술형 — '모욕' 용어 대신 '폭언' 중심 표기)
+    #    예시 블록은 입력에 따라 동적으로 편향을 줄여도 되지만,
+    #    여기서는 간결성을 위해 고정 예시 + 폭언 표기로 유지
     prompt = f"""
 너는 악성민원 대응 및 관련 법률 자문을 돕는 전문가 AI야.
 
 아래 통화 내용을 참고해서 다음 형식에 맞춰 정중하고 구조화된 요약을 생성해줘.
 
 ✅ 특히 **적용 가능한 법률**에는 반드시 '법률명 + 조문번호 + 조문명'을 포함해서 작성하고,
-   각 법률이 어떤 악성 발언 유형(예: 성희롱, 모욕, 명예훼손 등)에 대응되는지 간단히 설명해줘.
+   각 법률이 어떤 악성 발언 유형(예: 성희롱, 폭언, 명예훼손, 협박 등)에 대응되는지 간단히 설명해줘.
 
 ✅ 또한 Markdown 문법과 아이콘을 포함하고, 출력은 자연스럽고 띄어쓰기가 올바른 한국어 문장으로 작성해줘.
 
 [응답 형식 예시]
-안녕하세요 000님, 방금 상담 중 고객으로부터 폭언이나 성희롱 발언을 받으셨네요. 관련 법률과 대응 방법을 안내해드릴게요.
+안녕하세요 상담원님, 방금 상담 중 고객으로부터 폭언이나 성희롱 발언을 받으셨네요. 관련 법률과 대응 방법을 안내해드릴게요.
 
 👩‍⚖️ **적용 가능한 법률:**
-- **형법 제311조(모욕죄)**: 상대방을 공개적으로 모욕할 경우 적용됩니다.
+- **형법 제311조(모욕)**: 상대방을 공개적으로 모욕하거나 심한 욕설을 하는 폭언 상황에 주로 적용됩니다.
 - **성폭력범죄의 처벌 등에 관한 특례법 제13조(통신매체를 이용한 음란행위)**: 성적 수치심을 유발하는 발언이 있을 경우 적용될 수 있습니다.
+- **형법 제283조(협박)**: 신체·생명 등에 위해를 가하겠다는 취지의 위협 발언에 적용됩니다.
 
 ⚖️ **대응 방법:**
 📝 1. **사내 대응 절차**
-   -  **1차 조치**: 고객 발언이 욕설·성희롱·협박에 해당될 경우 즉시 ARS 경고멘트를 송출하거나 통화 종료 권한을 행사할 수 있습니다.
+   -  **1차 조치**: 고객 발언이 폭언·성희롱·협박에 해당될 경우 즉시 ARS 경고멘트를 송출하거나 통화 종료 권한을 행사할 수 있습니다.
    -  **2차 조치**: 통화 종료 후, 소속 부서장에게 상황을 **보고**하고, 상담사 보호를 위한 **사내 대응 매뉴얼에 따라 악성민원 등록**을 요청하세요.
    -  **3차 조치**: 필요시 악성민원 전담관리자가 해당 고객의 **재통화 차단**, **주의 고객 등록**, **전담 응대 팀 이관** 등을 검토할 수 있습니다.
    -  **상담 지원**: 정신적 충격이 있는 경우, **EAP 프로그램(심리상담/내부상담센터)** 등을 통해 보호 조치를 받을 수 있습니다.
@@ -134,7 +209,7 @@ async def analyze_call_session(request: Request):
 ⚒️ 2. **법적 조치**
    -  **내용 기록**: 폭언, 성희롱, 협박 등이 있었다면 해당 발언 내용을 녹취 및 대화 로그로 보관하고, **상세 보고서 작성**을 권장합니다.
    -  **사내 법무팀/감사팀 협조 요청**: 반복적이거나 악의적인 사례는 법무팀과 협의해 **경고장 발송**, **법률 자문**, **형사고발 여부 검토** 등을 진행할 수 있습니다.
-   -  **형사고소 및 민사청구**: 실제 피해 발생 시에는 모욕죄·명예훼손·강요·스토킹 등으로 고소가 가능하며, 정신적 피해에 따른 **위자료 청구**도 고려할 수 있습니다.
+   -  **형사고소 및 민사청구**: 실제 피해 발생 시에는 모욕(폭언)·명예훼손·협박 등으로 고소가 가능하며, 정신적 피해에 따른 **위자료 청구**도 고려할 수 있습니다.
 
 ➕ 추가로 도움이 필요하시면 언제든 말씀해주세요!
 
@@ -154,7 +229,7 @@ async def analyze_call_session(request: Request):
         full_response = ""
         try:
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=CHAT_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 stream=True
             )
@@ -162,32 +237,37 @@ async def analyze_call_session(request: Request):
                 delta = chunk.choices[0].delta.content
                 if delta:
                     full_response += delta
-                    yield f"{delta}\n\n"
+                    # SSE 규격상 data: 접두사 권장
+                    yield f"data: {delta}\n\n"
 
-            # --- 병합 로직 (callchat_stream과 동일) ---
-            # 1) 키워드 기반
+            # -----------------------------
+            # 병합 파이프라인 (프롬프트 자유서술 유지)
+            # -----------------------------
+            # 1) 키워드 기반 1차 힌트
             kw_sources = keyword_pairs_first(context_dialogue + "\n" + question)
 
-            # 2) 모델 소스 (JSON 파싱 시도)
-            model_sources = []
-            try:
-                parsed = json.loads(full_response)
-                if isinstance(parsed, dict) and isinstance(parsed.get("sourcePages"), list):
-                    model_sources = [
-                        {"유형": (e.get("유형") or "").strip(),
-                         "관련법률": _normalize_law_name((e.get("관련법률") or "").strip())}
-                        for e in parsed["sourcePages"] if isinstance(e, dict)
-                    ]
-            except Exception:
-                pass
+            # (추가) 의미 기반 탐지 결과를 kw_sources에 주입
+            #  - merge_sources에서 관련법률이 비어 있어도 RAG/정규식으로 보강 가능
+            for t in detected:  # {'협박','성희롱','폭언'}
+                kw_sources.append({"유형": t, "관련법률": ""})
+
+            # 2) 모델 출력 파싱
+            #   - JSON이면 JSON 사용
+            #   - JSON 아니면 자유 텍스트로 보고, 정규식으로 법률명 추출(보완)
+            model_answer_raw, model_sources = parse_model_json(full_response)
+            if not model_sources:
+                law_hits = extract_law_mentions(full_response)
+                if law_hits:
+                    inferred_type = (list(detected)[0] if detected else (kw_sources[0]["유형"] if kw_sources else "관련법률"))
+                    model_sources = [{"유형": inferred_type, "관련법률": lw} for lw in law_hits]
 
             # 3) RAG 소스
             rag_sources = source_pages_rag
-            
-            # ✅ 평범한 통화 여부 체크
+
+            # 3.5) 평범한 통화(모든 근거가 비었을 때) 빠른 종료
             if not kw_sources and not model_sources and not rag_sources:
                 final_answer = (
-                    "안녕하세요 고객님, 방금 통화 중에 발생한 상황에 대해 처리 방법과 관련 법률을 안내해드리겠습니다.\n\n"
+                    "안녕하세요 상담원님, 방금 통화 중에 발생한 상황에 대해 처리 방법과 관련 법률을 안내해드리겠습니다.\n\n"
                     "현재 통화 내용에서는 특별히 문제가 되는 발언이 발견되지 않았습니다. "
                     "따라서 본 건은 법적 조치 대상은 아니며 일반 민원 응대로 판단됩니다.\n\n"
                     "➕ 추가로 도움이 필요하시면 언제든 말씀해주세요!"
@@ -195,19 +275,19 @@ async def analyze_call_session(request: Request):
                 payload = {"answer": final_answer, "sourcePages": []}
                 yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
                 yield "data: [END]\n\n"
-                return  # ✅ 여기서 종료
+                return
 
+            # 4) 최종 병합 (키워드 → RAG → 모델) + 정규화/분할/중복제거/limit 처리
+            final_sources = merge_sources(kw_sources, rag_sources, model_sources, limit=3)
 
-            # 4) 최종 병합 (kw → model → rag)
-            merged = kw_sources + model_sources + rag_sources
+            # 5) answer 2문단 보정 (모델 JSON answer 우선, 없으면 자유 텍스트)
+            final_answer = ensure_two_paragraphs(model_answer_raw or full_response, final_sources)
 
-            # 5) 후처리 (dedup/정규화/최대 3개)
-            final_sources = _post_filter_sources(merged, limit=3)
-
-            # 6) answer 보정 (두 번째 문단만 교체)
-            final_answer = _ensure_two_paragraphs(full_response, final_sources)
-
-            payload = {"answer": final_answer, "sourcePages": final_sources}
+            payload = {
+                "answer": final_answer,
+                "sourcePages": final_sources,
+                "sourcePagesText": format_sourcepages_text(final_sources),
+            }
             yield f"data: [JSON]{json.dumps(payload, ensure_ascii=False)}\n\n"
             yield "data: [END]\n\n"
 
@@ -215,4 +295,5 @@ async def analyze_call_session(request: Request):
             yield f"data: [ERROR] {str(e)}\n\n"
             yield "data: [END]\n\n"
 
-    return EventSourceResponse(event_generator())
+    # 버퍼링 방지 헤더 통일
+    return EventSourceResponse(event_generator(), headers={"X-Accel-Buffering": "no"})
